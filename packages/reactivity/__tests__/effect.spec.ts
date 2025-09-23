@@ -892,7 +892,7 @@ describe('reactivity/effect', () => {
     s.value++
     expect(seq.toString()).toBe('1,2,3,4')
 
-    // Why nested effects should be reported an error:
+    // Why nested effects should be reported as an error:
     expect(sum).toBe(9) // 3 + 2 + 1 effects!
     s.value++
     expect(sum).toBe(19) // 3 + 2*(2 + 1) effects!
