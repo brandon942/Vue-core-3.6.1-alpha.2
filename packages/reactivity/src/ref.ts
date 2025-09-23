@@ -267,6 +267,7 @@ export function triggerRef(ref: Ref): void {
     if (!batchDepth) {
       flush()
     }
+    makeBranchesDirtyOnDepChange(dep)
   }
 }
 

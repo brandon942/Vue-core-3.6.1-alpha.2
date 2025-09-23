@@ -175,7 +175,11 @@ export class ReactiveEffect<T = any>
         this.notify()
       } else {
         // unlink effect if no deps so that it can be gc'd
-        if (!this.deps && flags & EffectFlags.StopEffectIfNoDeps) {
+        if (
+          !this.deps &&
+          flags & EffectFlags.StopEffectIfNoDeps &&
+          !(flags & EffectFlags.ManualHandling)
+        ) {
           this.stop()
         }
       }
@@ -818,7 +822,10 @@ export class ReactiveEffectAsync
   subsTail: Link | undefined = undefined
 
   flags: ReactiveFlags =
-    ReactiveFlags.Watching | ReactiveFlags.Dirty | EffectFlags.ASYNC
+    ReactiveFlags.Watching |
+    ReactiveFlags.Dirty |
+    EffectFlags.ASYNC |
+    EffectFlags.StopEffectIfNoDeps
   onStop?: () => void
   onTrack?: (event: DebuggerEvent) => void
   onTrigger?: (event: DebuggerEvent) => void
