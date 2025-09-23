@@ -459,7 +459,7 @@ export function watchEffectAsyncLightest(
   if (constraint) {
     effect.setConstraint(constraint, blacklist)
   }
-  if (maxConcurrentRuns && maxConcurrentRuns > 0) {
+  if (typeof maxConcurrentRuns === 'number' && maxConcurrentRuns > 0) {
     effect.maxConcurrentRuns = maxConcurrentRuns
   }
 

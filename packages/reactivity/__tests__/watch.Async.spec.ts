@@ -31,7 +31,7 @@ describe('watchEffectAsyncLight', () => {
     const v2 = ref(2)
 
     // Recursive triggering is only allowed if the flag TriggerSynchronously is set along with ALLOW_RECURSE
-    // It's to mirror watchWeffect behavior but it's not allowed otherwise
+    // It's to mirror watchEffect behavior but it's not allowed otherwise
     let toRecurseInfinitely = false
     let numRuns = 0
     let hasRecursedInfinitely: Boolean = false

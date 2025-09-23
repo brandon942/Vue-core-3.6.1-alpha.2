@@ -824,7 +824,7 @@ export class ReactiveEffectAsync
 
     // init
     this.flags |= initialFlags
-    if (this.flags & EffectFlags.EnabledManualBranching) {
+    if (initialFlags & EffectFlags.EnabledManualBranching) {
       this.branches = new Map()
     }
 
