@@ -72,6 +72,7 @@ export const enum EffectFlags {
   RUNNING = 1 << 24,
   ScheduleRecursiveRerun = 1 << 25,
   ManualHandling = 1 << 26,
+  StopEffectIfNoDeps = 1 << 27,
 }
 
 export class ReactiveEffect<T = any>
@@ -109,11 +110,28 @@ export class ReactiveEffect<T = any>
     }
 
     if (__DEV__ && activeSub) {
-      warn(`watchEffect() should never be used inside another effect `)
+      console.error(`watchEffect() should never be used inside another effect `)
+      // see: effect.specs.ts#'debug: the call sequence of onTrigger'
     }
     if (__DEV__) {
       // @ts-ignore
       this.EffectID = ++ReactiveEffectIdCtr
+      // @ts-ignore
+      this.getDeps = () => {
+        // @ts-ignore
+        let d = this.deps
+        let a = []
+        let i = 0
+        while (d) {
+          if (++i > 200) {
+            console.warn('possible linked list loop')
+            break
+          }
+          a.push(d.dep)
+          d = d.nextDep
+        }
+        return a
+      }
     }
   }
 
@@ -157,7 +175,7 @@ export class ReactiveEffect<T = any>
         this.notify()
       } else {
         // unlink effect if no deps so that it can be gc'd
-        if (!this.subs) {
+        if (!this.deps && flags & EffectFlags.StopEffectIfNoDeps) {
           this.stop()
         }
       }
@@ -1005,6 +1023,7 @@ export class ReactiveEffectAsync
         // unlink effect if no deps found so that it can be gc'd
         if (
           !this.deps &&
+          flags & EffectFlags.StopEffectIfNoDeps &&
           !(flags & EffectFlags.ManualHandling) &&
           !this.runs.size &&
           !(this.flags & EffectFlags.IsScheduledRun)

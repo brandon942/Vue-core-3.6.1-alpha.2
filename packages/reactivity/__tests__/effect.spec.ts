@@ -861,15 +861,19 @@ describe('reactivity/effect', () => {
         onTrigger: trigger1,
       },
     )
-    effect(
+    let sum = 0
+    let r = effect(
       () => {
         s.value
+        ++sum
         effect(
           () => {
             s.value
+            ++sum
             effect(
               () => {
                 s.value
+                ++sum
               },
               {
                 onTrigger: trigger4,
@@ -887,6 +891,13 @@ describe('reactivity/effect', () => {
     )
     s.value++
     expect(seq.toString()).toBe('1,2,3,4')
+
+    // Why nested effects should be reported an error:
+    expect(sum).toBe(9) // 3 + 2 + 1 effects!
+    s.value++
+    expect(sum).toBe(19) // 3 + 2*(2 + 1) effects!
+    s.value++
+    expect(sum).toBe(34) // 3 + 2*2*(2 + 1) effects!
   })
 
   it('stop', () => {
