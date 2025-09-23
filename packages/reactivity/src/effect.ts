@@ -413,6 +413,7 @@ const enum BranchFlags {
   DIRTY = 1 << 0,
   RUNNING = 1 << 1,
   INACTIVE = 1 << 2,
+  ISSYNCHRONOUS = 1 << 3,
 }
 
 // Globals ----------------------------------------------------------------------------------------------------------
@@ -476,7 +477,7 @@ export class AsyncRunInfo {
   deferredCleanups?: CleanupHandler[] = undefined
   flags: RunInfoFlags = RunInfoFlags.RunningInitialSyncPart
   lastTrackedDepLink?: Link = undefined
-  visitedBranches?: BranchInfo[] = undefined
+  visitedBranches?: Map<BranchInfo, number> = undefined
   immediateBranchCleanups?: Map<BranchInfo, CleanupHandler[]> = undefined
   deferredBranchCleanups?: Map<BranchInfo, CleanupHandler[]> = undefined
 }
@@ -611,7 +612,10 @@ export class AsyncEffectHelper implements AsyncEffectHelperInterface {
       branchInfo.parentBranch = branch // parent can differ from run to run
     }
 
-    branch?.collectingChildren.push(branchInfo)
+    let collectingChildren = branch?.collectingChildren
+    if (collectingChildren && collectingChildren.indexOf(branchInfo) < 0) {
+      branch?.collectingChildren.push(branchInfo)
+    }
 
     if (hasChanges) {
       function onBranchEnd(branchInfo: BranchInfo, helper: any) {
@@ -667,7 +671,10 @@ export class AsyncEffectHelper implements AsyncEffectHelperInterface {
         }
       }
       ++branchInfo.currentNumVisits
-      runInfo.visitedBranches?.push(branchInfo)
+      runInfo.visitedBranches!.set(
+        branchInfo,
+        (runInfo.visitedBranches!.get(branchInfo) ?? 0) + 1,
+      )
 
       let result: any
       let prevBranch = effect.activeBranch
@@ -683,6 +690,9 @@ export class AsyncEffectHelper implements AsyncEffectHelperInterface {
         result = yesBranchFunction(helper)
         if (result instanceof Promise) {
           await this.resume(result)
+          branchInfo.flags &= ~BranchFlags.ISSYNCHRONOUS
+        } else {
+          branchInfo.flags |= BranchFlags.ISSYNCHRONOUS
         }
         onBranchEnd(branchInfo, helper)
       } catch (err) {
@@ -699,7 +709,10 @@ export class AsyncEffectHelper implements AsyncEffectHelperInterface {
 
       function retrackBranchDepsAndMarkAsVisited(branchInfo: BranchInfo) {
         ++branchInfo.currentNumVisits
-        runInfo.visitedBranches?.push(branchInfo)
+        runInfo.visitedBranches!.set(
+          branchInfo,
+          (runInfo.visitedBranches!.get(branchInfo) ?? 0) + 1,
+        )
         for (const dep of branchInfo.activeDeps) {
           if (isLivetracking && !collected.has(dep)) {
             link(dep, effect)
@@ -715,8 +728,10 @@ export class AsyncEffectHelper implements AsyncEffectHelperInterface {
       if (onSkippedCallback) {
         onSkippedCallback(branchInfo.ctx)
       }
-      await null
-      this.resume()
+      if (!(branchInfo.flags & BranchFlags.ISSYNCHRONOUS)) {
+        await null
+        this.resume()
+      }
     }
   }
   ifHasChanges!: typeof this.hasChanged
@@ -936,8 +951,8 @@ export class ReactiveEffectAsync
       let cleanupError1: any
       if (flags & EffectFlags.EnabledManualBranching) {
         // Branch dependencies
-        for (const branchInfo of run.visitedBranches!) {
-          --branchInfo.currentNumVisits
+        for (const [branchInfo, numVisits] of run.visitedBranches!) {
+          branchInfo.currentNumVisits -= numVisits
           if (aborted) {
             branchInfo.collectingDeps.clear()
             branchInfo.collectingChildren.length = 0
@@ -952,7 +967,7 @@ export class ReactiveEffectAsync
             let immediate = run.immediateBranchCleanups
             let deferred = run.deferredBranchCleanups
             if (immediate || deferred) {
-              for (const branchInfo of run.visitedBranches!) {
+              for (const branchInfo of run.visitedBranches!.keys()) {
                 immediate && _cleanup(immediate.get(branchInfo), aborted)
                 deferred && _cleanup(deferred.get(branchInfo), aborted)
               }
@@ -962,7 +977,6 @@ export class ReactiveEffectAsync
           }
         }
       }
-      let cleanupError2: any
       try {
         _cleanup(run.cleanups, aborted)
         let deferred = run.deferredCleanups
@@ -974,11 +988,11 @@ export class ReactiveEffectAsync
           }
         }
       } catch (error) {
-        cleanupError2 = error
+        cleanupError1 ??= error
       }
 
       if (cleanupError1) {
-        throw cleanupError1 || cleanupError2
+        throw cleanupError1
       }
 
       if (toRecurse) {
@@ -1233,7 +1247,7 @@ export class ReactiveEffectAsync
       runInfo.runId = ++this.runIdCtr!
     }
     if (flags & EffectFlags.EnabledManualBranching) {
-      runInfo.visitedBranches = []
+      runInfo.visitedBranches = new Map()
     }
 
     if (abortedRun) {

@@ -41,7 +41,7 @@ export class Dep implements ReactiveNode {
         let a = []
         let c = 0
         while (s) {
-          if (c > 200) {
+          if (c++ > 200) {
             console.log('possible subs link loop')
             break
           }

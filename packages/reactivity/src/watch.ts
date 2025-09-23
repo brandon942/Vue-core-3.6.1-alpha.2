@@ -347,7 +347,6 @@ export interface WatchEffectAsyncOptions extends WatchEffectAsyncOptionsLight {
   toAbortOnRetrigger?: any
   toTriggerSynchronously?: any
   enableSkipping?: any
-  maxConcurrentRuns?: number
   manualHandling?: any
 }
 export interface WatchEffectAsyncOptionsLight
@@ -356,6 +355,7 @@ export interface WatchEffectAsyncOptionsLight
   flags?: number
   whitelist?: ListedDependencies
   blacklist?: ListedDependencies
+  maxConcurrentRuns?: number
 }
 
 export class WatcherEffectAsync extends ReactiveEffectAsync {
@@ -387,25 +387,35 @@ export class WatcherEffectAsync extends ReactiveEffectAsync {
       __DEV__ && warnInvalidSource(func, onWarn)
     }
     const {
-      toLiveTrack: isLiveTracking,
+      toLiveTrack,
       isReentrant,
       toAbortOnPause,
       toAbortOnDestuct,
       toAbortOnRetrigger,
+      toTriggerSynchronously,
       maxConcurrentRuns,
       enableSkipping,
+      manualHandling,
+      blacklist,
+      whitelist,
     } = options
     let flags = 0
-    if (isLiveTracking) flags |= EffectFlags.LIVETRACKING
+    if (toLiveTrack) flags |= EffectFlags.LIVETRACKING
     if (isReentrant) flags |= EffectFlags.REENTRANT
     if (toAbortOnPause) flags |= EffectFlags.AbortRunOnPause
     if (toAbortOnDestuct) flags |= EffectFlags.AbortRunOnStop
     if (toAbortOnRetrigger) flags |= EffectFlags.AbortRunOnRetrigger
     if (enableSkipping) flags |= EffectFlags.EnabledManualBranching
+    if (manualHandling) flags |= EffectFlags.ManualHandling
+    if (toTriggerSynchronously) flags |= EffectFlags.TriggerSynchronously
 
     super(getter, flags)
 
-    if (typeof maxConcurrentRuns === 'number') {
+    let constraint = blacklist || whitelist
+    if (constraint) {
+      this.setConstraint(constraint, blacklist)
+    }
+    if (typeof maxConcurrentRuns === 'number' && maxConcurrentRuns > 0) {
       this.maxConcurrentRuns = maxConcurrentRuns
     }
 
@@ -420,21 +430,12 @@ export function watchEffectAsyncLight(
   effectFunction: AsyncEffectFunction,
   options: WatchEffectAsyncOptions = EMPTY_OBJ,
 ): ReactiveEffectAsync {
-  const { blacklist, whitelist, manualHandling } = options
+  const { manualHandling } = options
 
   let effect: ReactiveEffectAsync = new WatcherEffectAsync(
     effectFunction,
     options,
   )
-  let constraint = blacklist || whitelist
-  if (constraint) {
-    effect.setConstraint(constraint, blacklist)
-  }
-
-  if (__DEV__) {
-    effect.onTrack = options.onTrack
-    effect.onTrigger = options.onTrigger
-  }
 
   if (!manualHandling) {
     effect.run()
@@ -447,7 +448,7 @@ export function watchEffectAsyncLightest(
   effectFunction: AsyncEffectFunction,
   options: WatchEffectAsyncOptionsLight = EMPTY_OBJ,
 ): ReactiveEffectAsync {
-  const { blacklist, whitelist } = options
+  const { blacklist, whitelist, maxConcurrentRuns } = options
 
   let flags = options.flags || 0
   let effect: ReactiveEffectAsync = new ReactiveEffectAsync(
@@ -457,6 +458,9 @@ export function watchEffectAsyncLightest(
   let constraint = blacklist || whitelist
   if (constraint) {
     effect.setConstraint(constraint, blacklist)
+  }
+  if (maxConcurrentRuns && maxConcurrentRuns > 0) {
+    effect.maxConcurrentRuns = maxConcurrentRuns
   }
 
   if (__DEV__) {

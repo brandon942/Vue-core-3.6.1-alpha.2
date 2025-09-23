@@ -66,7 +66,7 @@ export {
   type DebuggerEvent,
   type DebuggerEventExtraInfo,
   type AsyncEffectFunction,
-  type ListedDependenciesWithOther,
+  type ListedDependencies,
   type AsyncEffectHelperInterface,
   RunInfoFlags,
   ReactiveEffectAsync,

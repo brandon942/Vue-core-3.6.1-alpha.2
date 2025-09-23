@@ -1016,6 +1016,8 @@ describe('watchEffectAsyncLight', () => {
     await e.awaitCompletion(true)
     expect(numTimesLoopedBranchWasRun, 'outside changes do dirty').toBe(4)
     expect(numTimesLoopedBranchWasSkipped).toBe(6)
+    // @ts-ignore
+    expect(e.getBranchChildrenIds('_4_')).toEqual(['_Looped_'])
   })
 
   test('blacklists/whitelists', async () => {
