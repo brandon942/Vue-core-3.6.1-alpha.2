@@ -1390,9 +1390,6 @@ export class ReactiveEffectAsync
    */
   notify(dep?: ReactiveNode): any {
     let flags = this.flags
-    if (flags & EffectFlags.EnabledManualBranching) {
-      setSubsDirtyOnBranchDepChange(dep)
-    }
     if (flags & EffectFlags.PAUSED) {
       return
     }
