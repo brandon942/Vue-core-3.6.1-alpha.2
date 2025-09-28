@@ -32,7 +32,7 @@ import {
 import {
   EffectFlags,
   SubscriberAsync,
-  setSubsDirtyOnBranchDepChange as makeBranchesDirtyOnDepChange,
+  setSubsDirtyOnBranchDepChange,
 } from './effect'
 
 declare const RefSymbol: unique symbol
@@ -41,6 +41,8 @@ export declare const RawSymbol: unique symbol
 export interface Ref<T = any, S = T> {
   get value(): T
   set value(_: S)
+  get v(): T
+  set v(_: S)
   /**
    * Type differentiator only.
    * We need this to be in public d.ts but don't want it to show up in IDE
@@ -203,7 +205,7 @@ class RefImpl<T = any> implements ReactiveNode {
       this._value =
         !useDirectValue && this._wrap ? this._wrap(newValue) : newValue
 
-      makeBranchesDirtyOnDepChange(this)
+      setSubsDirtyOnBranchDepChange(this)
 
       const subs = this.subs
       if (subs !== undefined) {
@@ -232,6 +234,12 @@ class RefImpl<T = any> implements ReactiveNode {
     return hasChanged(this._oldValue, (this._oldValue = this._rawValue))
   }
 }
+
+Object.defineProperty(
+  RefImpl.prototype,
+  'v',
+  Object.getOwnPropertyDescriptor(RefImpl.prototype, 'value')!,
+)
 
 /**
  * Force trigger effects that depends on a shallow ref. This is typically used
@@ -267,7 +275,7 @@ export function triggerRef(ref: Ref): void {
     if (!batchDepth) {
       flush()
     }
-    makeBranchesDirtyOnDepChange(dep)
+    setSubsDirtyOnBranchDepChange(dep)
   }
 }
 

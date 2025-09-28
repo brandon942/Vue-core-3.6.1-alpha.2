@@ -54,25 +54,35 @@ export const enum EffectFlags {
    */
   ALLOW_RECURSE = 1 << 7, // synchronous only
   PAUSED = 1 << 8,
-  STOP = 1 << 10,
+  STOP = 1 << 9,
+  // sync:
+  HasDepConstraint = 1 << 16, // this is deliberate - sync effects can redefine async-specific flags
 
   // async:
-  ASYNC = 1 << 12,
-  REENTRANT = 1 << 13,
-  LIVETRACKING = 1 << 14,
-  ScheduleRunAfterCurrentRun = 1 << 15,
-  IsScheduledRun = 1 << 16,
-  AbortRunOnRetrigger = 1 << 17,
-  AbortRunOnPause = 1 << 18,
-  AbortRunOnStop = 1 << 19,
-  DepConstraintIsBlacklist = 1 << 20,
-  ObservingDep = 1 << 21,
-  EnabledManualBranching = 1 << 22,
-  TriggerSynchronously = 1 << 23,
-  RUNNING = 1 << 24,
-  ScheduleRecursiveRerun = 1 << 25,
-  ManualHandling = 1 << 26,
-  StopEffectIfNoDeps = 1 << 27,
+  ASYNC = 1 << 10,
+  REENTRANT = 1 << 11,
+  LIVETRACKING = 1 << 12,
+  RUNNING = 1 << 13,
+  ScheduleRunAfterCurrentRun = 1 << 14,
+  IsScheduledRun = 1 << 15,
+  AbortRunOnRetrigger = 1 << 16,
+  AbortRunOnPause = 1 << 17,
+  AbortRunOnStop = 1 << 18,
+  DepConstraintIsBlacklist = 1 << 19,
+  ObservingDep = 1 << 20,
+  EnabledManualBranching = 1 << 21,
+  TriggerSynchronously = 1 << 22,
+  ScheduleRecursiveRerun = 1 << 23,
+  ManualHandling = 1 << 24,
+  StopEffectIfNoDeps = 1 << 25,
+  // nested effects
+  //   NestedEffect = 1 << 26, // replaced with "parent" prop
+  PersistentChildEffect = 1 << 26,
+  PausedOnUnvisit = 1 << 27,
+  AbortOnUnvisit = 1 << 28,
+  Unvisited = 1 << 29,
+  //   AbortOnUpdate = 1 << 29, // replaced by "AbortCurrent" option
+  // 1 << 29 should be the last flag so that flags remains an unboxed SMI
 }
 
 export class ReactiveEffect<T = any>
@@ -375,11 +385,30 @@ function cleanupEffect(fn: () => void) {
 
 // Helpers -------------------------------------------------------------------------------------------------------
 const getFirstKey = <K>(map: Map<K, any> | Set<K>) => map.keys().next().value
+export const pushUnique = (a: any[], v: any): any =>
+  a.indexOf(v) < 0 && a.push(v)
 
 // Types ---------------------------------------------------------------------------------------------------------
 export interface SubscriberAsync extends ReactiveNode {
   track(dep: ReactiveNode): any
   observedDeps?: Set<ReactiveNode>
+}
+export interface ReactiveEffectNestableInterface
+  extends ReactiveNode,
+    ReactiveEffectOptions {
+  children?: Array<ReactiveEffectNestableInterface>
+  parent?: ReactiveEffectNestableInterface
+  effectId?: string
+  fn: Function
+  dirty: boolean
+  depConstraint?: WeakSet<ReactiveNode>
+  addChild(child: ReactiveEffectNestableInterface): void
+  stop(): void
+  abort?(toIncludeChildren?: any): void
+  pause(toIncludeChildren?: any): void
+  resume(): any
+  setConstraint(dependencies?: ListedDependencies, isBlacklist?: any): void
+  scheduleRun(forceRun?: any, forceSync?: any): any
 }
 
 export const enum RunInfoFlags {
@@ -437,6 +466,12 @@ const enum BranchFlags {
   INACTIVE = 1 << 2,
   ISSYNCHRONOUS = 1 << 3,
 }
+const enum RunCause {
+  Manual = 0,
+  DepTrigger = 1,
+  Initial = 2,
+  ChildUpdate = 4,
+}
 
 // Globals ----------------------------------------------------------------------------------------------------------
 let DepBranchMap: WeakMap<ReactiveNode, BranchInfo | BranchInfo[]> =
@@ -450,11 +485,7 @@ if (__DEV__) {
 
 export function observeDependenciesIn(
   dependencies: ListedDependencies,
-): Set<ReactiveNode>
-export function observeDependenciesIn(
-  dependencies: ListedDependencies,
-): [Set<ReactiveNode>, boolean]
-export function observeDependenciesIn(dependencies: ListedDependencies): any {
+): Set<ReactiveNode> {
   let observedDeps = (ObservingSubscriber.observedDeps = new Set())
   const prevEffect = setActiveSub(ObservingSubscriber)
   try {
@@ -502,6 +533,7 @@ export class AsyncRunInfo {
   visitedBranches?: Map<BranchInfo, number> = undefined
   immediateBranchCleanups?: Map<BranchInfo, CleanupHandler[]> = undefined
   deferredBranchCleanups?: Map<BranchInfo, CleanupHandler[]> = undefined
+  collectingChildren?: Array<ReactiveEffectNestableInterface>
 }
 export class AsyncEffectHelper implements AsyncEffectHelperInterface {
   private _this?: AsyncEffectHelper
@@ -799,7 +831,11 @@ AsyncEffectHelper.prototype.skippable = AsyncEffectHelper.prototype.hasChanged
 
 //   -------------------------------------------------------------------------------------------
 export class ReactiveEffectAsync
-  implements SubscriberAsync, ReactiveEffectOptions, ReactiveNode
+  implements
+    SubscriberAsync,
+    ReactiveEffectOptions,
+    ReactiveNode,
+    ReactiveEffectNestableInterface
 {
   runs: Set<AsyncRunInfo> = new Set()
   activeRun?: AsyncRunInfo = undefined
@@ -808,6 +844,9 @@ export class ReactiveEffectAsync
   branches?: Map<string, BranchInfo> = undefined
   abortedRun?: AsyncRunInfo
   deferredCleanups?: CleanupHandler[]
+  //   children?: Map<string, ReactiveEffect | ReactiveEffectAsync>
+  children?: Array<ReactiveEffectNestableInterface>
+  parent?: ReactiveEffectNestableInterface
   private runIdCtr?: number
 
   // whitelist / blacklist
@@ -833,8 +872,10 @@ export class ReactiveEffectAsync
   constructor(
     public fn: AsyncEffectFunction,
     initialFlags: number = 0,
+    public effectId?: string,
+    isChildEffect?: any,
   ) {
-    if (activeEffectScope) {
+    if (!isChildEffect && activeEffectScope) {
       link(this, activeEffectScope)
     }
 
@@ -853,9 +894,9 @@ export class ReactiveEffectAsync
       this.branches = new Map()
     }
 
-    if (__DEV__ && activeSub) {
+    /* if (__DEV__ && activeSub) {
       warn(`watchEffectAsync() should never be used inside another effect `)
-    }
+    } */
 
     if (__DEV__) {
       this.runIdCtr = 0
@@ -936,7 +977,19 @@ export class ReactiveEffectAsync
           return `${b.ID}: deps(${[...b.activeDeps].map(d => d.DepID ?? d.id).join(', ')}) children(${b.children.map(c => c.ID).join(', ')})`
         })
       }
+      // @ts-ignore
+      this.getchildEffectIds = () => {
+        return [...(this.children ?? [])].map(c => c.effectId || '')
+      }
     }
+  }
+
+  addChild(child: ReactiveEffectNestableInterface): void {
+    // ?? Array or Map??
+    // What about loops? - behave the same way as with the 1st call
+    let children = (this.activeRun!.collectingChildren ??= [])
+    pushUnique(children, child)
+    child.parent = this
   }
 
   endRun(run: AsyncRunInfo, aborted?: Boolean, result?: any): void {
@@ -1020,6 +1073,10 @@ export class ReactiveEffectAsync
         throw cleanupError1
       }
 
+      if (run.collectingChildren || this.children) {
+        updateChildEffects(aborted, this, run.collectingChildren)
+      }
+
       if (toRecurse) {
         this.flags &= ~(
           EffectFlags.ScheduleRunAfterCurrentRun |
@@ -1041,21 +1098,28 @@ export class ReactiveEffectAsync
     }
   }
 
-  scheduleRun(toCheckIfDirty: any): void {
+  scheduleRun(forceRun?: any, forceSync?: any): any {
+    if (forceSync) {
+      this.run()
+      return
+    }
     if (this.flags & EffectFlags.IsScheduledRun) return
     this.flags |= EffectFlags.IsScheduledRun
     queueMicrotask(() => {
+      let flags = this.flags
+      if (!(flags & EffectFlags.IsScheduledRun)) {
+        return
+      }
       this.flags &= ~(
         EffectFlags.ScheduleRunAfterCurrentRun |
         EffectFlags.IsScheduledRun |
         EffectFlags.ScheduleRecursiveRerun
       )
-      let flags = this.flags
       if (
-        !(flags & EffectFlags.STOP) &&
+        !(flags & (EffectFlags.STOP | EffectFlags.PAUSED)) &&
         (flags & EffectFlags.REENTRANT || !(flags & EffectFlags.RUNNING))
       ) {
-        if (!toCheckIfDirty || this.dirty) {
+        if (!forceRun || this.dirty) {
           this.run()
         }
       }
@@ -1072,12 +1136,21 @@ export class ReactiveEffectAsync
     }
     return false
   }
-  abort(): void {
+  abort(toIncludeChildren: any = true): void {
     this.flags &= ~(
       EffectFlags.ScheduleRunAfterCurrentRun |
-      EffectFlags.ScheduleRecursiveRerun
+      EffectFlags.ScheduleRecursiveRerun |
+      EffectFlags.IsScheduledRun
     )
     this.abortRunsIfWanted(EffectFlags.RUNNING)
+    if (toIncludeChildren) {
+      let children = this.children
+      if (children) {
+        for (const child of children) {
+          child.abort?.(toIncludeChildren)
+        }
+      }
+    }
   }
 
   stop(): void {
@@ -1092,20 +1165,45 @@ export class ReactiveEffectAsync
       }
       this.flags |= EffectFlags.STOP
       this.abortRunsIfWanted(EffectFlags.AbortRunOnStop)
+
+      let children = this.children
+      if (children) {
+        for (const child of children) {
+          child.stop()
+        }
+        children.length = 0
+      }
     }
   }
 
-  pause(): void {
+  pause(toIncludeChildren: any = true): void {
     this.flags |= EffectFlags.PAUSED
     this.abortRunsIfWanted(EffectFlags.AbortRunOnPause)
+    if (toIncludeChildren) {
+      let children = this.children
+      if (children) {
+        for (const child of children) {
+          child.pause(toIncludeChildren)
+        }
+      }
+    }
   }
 
-  resume(): void {
+  resume(): any {
     let flags = this.flags
     if (flags & EffectFlags.PAUSED) {
-      this.flags &= ~EffectFlags.PAUSED
-      if (flags & (ReactiveFlags.Dirty | ReactiveFlags.Pending)) {
-        this.notify()
+      this.flags &= ~(EffectFlags.PAUSED | EffectFlags.PausedOnUnvisit)
+      if (
+        flags &
+        (EffectFlags.IsScheduledRun |
+          EffectFlags.ScheduleRunAfterCurrentRun |
+          EffectFlags.ScheduleRecursiveRerun)
+      ) {
+        return true
+      } else {
+        if (flags & (ReactiveFlags.Dirty | ReactiveFlags.Pending)) {
+          return this.notify()
+        }
       }
     }
   }
@@ -1143,12 +1241,16 @@ export class ReactiveEffectAsync
       try {
         var resultPromise = this.fn(effectHelper)
       } finally {
-        if (activeSub === this) {
-          if (!isLivetracking) setActiveSub(prevEffect)
-          else endTracking(this, prevEffect)
-          this.activeRun = undefined // must come after endTracking
-          this.activeBranch = undefined
+        if (!isLivetracking) setActiveSub(prevEffect)
+        else {
+          if (!activeSub) {
+            setActiveSub(this)
+            this.activeRun = runInfo
+          }
+          endTracking(this, prevEffect)
         }
+        this.activeRun = undefined // must come after endTracking
+        this.activeBranch = undefined
         runInfo.flags &= ~RunInfoFlags.RunningInitialSyncPart
       }
       if (runInfo.flags & RunInfoFlags.Aborted) {
@@ -1233,8 +1335,20 @@ export class ReactiveEffectAsync
       this.endRun(runInfo, false, result)
     }
   }
-  run(): Promise<any> {
+  run(): Promise<any> | void {
+    this.flags &= ~EffectFlags.IsScheduledRun
     let { flags } = this
+
+    // if parent is about to run, do not run child
+    let parent = this.parent
+    if (
+      parent &&
+      parent.flags & (EffectFlags.IsScheduledRun | ReactiveFlags.Dirty) &&
+      !(flags & EffectFlags.PersistentChildEffect)
+    ) {
+      return
+    }
+
     if (
       this.runs.size >= this.maxConcurrentRuns ||
       (flags & EffectFlags.RUNNING && !(flags & EffectFlags.REENTRANT))
@@ -1246,7 +1360,7 @@ export class ReactiveEffectAsync
       flags & EffectFlags.STOP ||
       flags & EffectFlags.ScheduleRunAfterCurrentRun
     ) {
-      return Promise.resolve()
+      return
     }
 
     let resolver: any
@@ -1279,6 +1393,9 @@ export class ReactiveEffectAsync
     if (abortedRun) {
       runInfo.flags |= RunInfoFlags.Restarted
     }
+
+    prepareChildrenOnParentRun(this)
+
     this.runs.add(runInfo)
     this._run(runInfo, rejecter)
     return runPromise
@@ -1287,8 +1404,11 @@ export class ReactiveEffectAsync
   /**
    * @internal
    */
-  notify(dep?: ReactiveNode, usesCustomScheduler?: Boolean): any {
+  notify(dep?: ReactiveNode): any {
     let flags = this.flags
+    if (flags & EffectFlags.EnabledManualBranching) {
+      setSubsDirtyOnBranchDepChange(dep)
+    }
     if (flags & EffectFlags.PAUSED) {
       return
     }
@@ -1329,26 +1449,21 @@ export class ReactiveEffectAsync
           }
         }
       }
-      return this.trigger(usesCustomScheduler)
+      return this.trigger()
     } finally {
       this.flags &= ~ReactiveFlags.Pending
     }
   }
 
-  private trigger(usesCustomScheduler?: Boolean): any {
+  private trigger(): any {
     let flags = this.flags
     if (this.dirty) {
       if (flags & EffectFlags.RUNNING && !(flags & EffectFlags.REENTRANT)) {
         this.flags |= EffectFlags.ScheduleRunAfterCurrentRun
         this.abortRunsIfWanted(EffectFlags.AbortRunOnRetrigger)
-      } else if (!usesCustomScheduler) {
-        if (flags & EffectFlags.TriggerSynchronously) {
-          this.run()
-        } else {
-          this.scheduleRun(false)
-        }
+      } else {
+        return this.scheduleRun(false, flags & EffectFlags.TriggerSynchronously)
       }
-      return true
     }
   }
 
@@ -1439,13 +1554,7 @@ export class ReactiveEffectAsync
     dependencies?: ListedDependencies,
     isBlacklist: any = true,
   ): void {
-    let depConstraint = dependencies
-      ? observeDependenciesIn(dependencies)
-      : null
-    this.depConstraint = depConstraint?.size
-      ? new WeakSet(depConstraint)
-      : undefined
-    if (isBlacklist) this.flags |= EffectFlags.DepConstraintIsBlacklist
+    setConstraint(this, dependencies, isBlacklist)
   }
 
   clearDependencies(): void {
@@ -1469,10 +1578,140 @@ export class ReactiveEffectAsync
   }
 }
 
-function _cleanup(
+export const prepareChildrenOnParentRun = (
+  effect: ReactiveEffectNestableInterface,
+): void => {
+  let children = effect.children
+  if (children) {
+    for (let i = children.length - 1; i >= 0; --i) {
+      let child = children[i]
+      if (!child.effectId) {
+        // stop unnamed child effects at start
+        children[i].stop()
+        //   children.splice(i, 1) // needed?
+      } else {
+        // pause non-persistent child effects until they are reached and updated
+        // because they shall not run with an outdated closure
+        pauseOnUnvisit(child, true, false)
+      }
+    }
+  }
+}
+
+export const updateChildEffects = (
+  aborted: any,
+  effect: ReactiveEffectNestableInterface,
+  collectingChildren: typeof effect.children,
+): void => {
+  let children = effect.children
+  let childI = 0,
+    childrenLen = children?.length ?? 0,
+    collectingChildrenLen = collectingChildren?.length ?? 0
+  if (aborted) {
+    // stop and remove new children
+    for (let i = 0; i < collectingChildrenLen; i++) {
+      let collectedChild = collectingChildren![i]
+      let hasChild =
+        childrenLen > childI
+          ? collectedChild === children![childI]
+            ? (++childI, true)
+            : children!.indexOf(collectedChild, childI + 1) >= 0
+          : false
+      if (!hasChild) {
+        collectedChild.stop()
+      }
+    }
+    // resume temporarily paused non-persistent children
+    for (let i = 0; i < childrenLen; i++) {
+      let child = children![i]
+      resumeOnVisit(child, true)
+    }
+    return
+  } else {
+    for (let i = 0; i < childrenLen; i++) {
+      let child = children![i]
+      let isCollected =
+        collectingChildrenLen > childI
+          ? child === collectingChildren![childI]
+            ? (++childI, true)
+            : collectingChildren!.indexOf(child, childI + 1) >= 0
+          : false
+      let childFlags = child.flags
+      if (!isCollected) {
+        child.flags |= EffectFlags.Unvisited
+        if (
+          (childFlags &
+            (EffectFlags.RUNNING |
+              EffectFlags.ASYNC |
+              EffectFlags.AbortOnUnvisit)) ===
+          (EffectFlags.RUNNING | EffectFlags.ASYNC | EffectFlags.AbortOnUnvisit)
+        ) {
+          child.abort!()
+        }
+        if (!(childFlags & EffectFlags.STOP)) {
+          pauseOnUnvisit(child, true, true)
+          ;(collectingChildren ??= []).push(child)
+        }
+      }
+    }
+  }
+  effect.children = collectingChildren
+}
+const pauseOnUnvisit = (
+  child: ReactiveEffectNestableInterface,
+  toIncludeChildren: any = true,
+  allowAbort?: any,
+): void => {
+  if (
+    !(
+      child.flags &
+      (EffectFlags.PersistentChildEffect |
+        EffectFlags.STOP |
+        EffectFlags.Unvisited)
+    )
+  ) {
+    // pause non-persistent child effects until they are reached and updated
+    // because they shall not run with an outdated closure
+    child.flags |= EffectFlags.PAUSED | EffectFlags.PausedOnUnvisit
+    if (allowAbort) {
+      ;(child as ReactiveEffectAsync).abortRunsIfWanted(
+        EffectFlags.AbortRunOnPause,
+      )
+    }
+    if (toIncludeChildren) {
+      let children = child.children
+      if (children) {
+        for (const child of children) {
+          pauseOnUnvisit(child, toIncludeChildren)
+        }
+      }
+    }
+  }
+}
+const resumeOnVisit = (
+  child: ReactiveEffectNestableInterface,
+  toIncludeChildren: any = true,
+): void => {
+  if (
+    child.flags & EffectFlags.PausedOnUnvisit &&
+    !(child.flags & (EffectFlags.STOP | EffectFlags.Unvisited))
+  ) {
+    child.resume()
+    if (toIncludeChildren) {
+      let children = child.children
+      if (children) {
+        for (const child of children) {
+          resumeOnVisit(child, toIncludeChildren)
+        }
+      }
+    }
+  }
+}
+
+const _cleanup = (
   cleanups: CleanupHandler[] | undefined,
   aborted: any = false,
-): void {
+): void => {
   if (cleanups?.length) {
     const prevSub = setActiveSub()
     try {
@@ -1486,7 +1725,19 @@ function _cleanup(
   }
 }
 
-export function setSubsDirtyOnBranchDepChange(dep: any): any {
+export const setConstraint = (
+  effect: ReactiveEffectNestableInterface,
+  dependencies?: ListedDependencies,
+  isBlacklist: any = true,
+): void => {
+  let depConstraint = dependencies ? observeDependenciesIn(dependencies) : null
+  effect.depConstraint = depConstraint?.size
+    ? new WeakSet(depConstraint)
+    : undefined
+  if (isBlacklist) effect.flags |= EffectFlags.DepConstraintIsBlacklist
+}
+
+export const setSubsDirtyOnBranchDepChange = (dep: any): any => {
   function setDirty(branchInfo?: BranchInfo) {
     while (branchInfo && !(branchInfo.flags & BranchFlags.DIRTY)) {
       branchInfo.flags |= BranchFlags.DIRTY

@@ -201,7 +201,8 @@ export function propagate(link: Link): void {
           (ReactiveFlags.RecursedCheck |
             ReactiveFlags.Recursed |
             ReactiveFlags.Dirty |
-            ReactiveFlags.Pending)
+            ReactiveFlags.Pending |
+            EffectFlags.IsScheduledRun)
         )
       ) {
         sub.flags = flags | ReactiveFlags.Pending
@@ -209,10 +210,17 @@ export function propagate(link: Link): void {
         !(flags & (ReactiveFlags.RecursedCheck | ReactiveFlags.Recursed))
       ) {
         flags = ReactiveFlags.None
-      } else if (!(flags & ReactiveFlags.RecursedCheck)) {
+      } else if (
+        !(flags & (ReactiveFlags.RecursedCheck | EffectFlags.IsScheduledRun))
+      ) {
         sub.flags = (flags & ~ReactiveFlags.Recursed) | ReactiveFlags.Pending
       } else if (
-        !(flags & (ReactiveFlags.Dirty | ReactiveFlags.Pending)) &&
+        !(
+          flags &
+          (ReactiveFlags.Dirty |
+            ReactiveFlags.Pending |
+            EffectFlags.IsScheduledRun)
+        ) &&
         (flags & EffectFlags.REENTRANT
           ? true
           : sub.depsTail &&

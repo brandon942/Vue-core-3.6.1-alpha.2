@@ -17,12 +17,13 @@ import {
   ReactiveFlags2,
   ReactiveEffectAsync,
   WatchEffectAsyncOptionsLight,
+  watchEffectLight,
 } from '../src'
 
 var sleep = (ms = 1) => new Promise(r => setTimeout(r, ms))
 const getFirstKey = <K>(map: Map<K, any> | Set<K>) => map.keys().next().value
 const areEqual = (a1: any[], a2: any[]) =>
-  a1.length == a2.length && a1.every((x, i) => x === a2[i])
+  a1 && a1?.length === a2?.length && a1.every((x, i) => x === a2[i])
 
 describe('watchEffectAsyncLight', () => {
   test('if sync mode works', () => {
@@ -356,6 +357,7 @@ describe('watchEffectAsyncLight', () => {
     ++v5.value
     await sleep(2)
     await e.awaitCompletion(true)
+    expect(e.runs.size).toBe(0)
 
     // manual abort
     ++v5.value
@@ -1351,5 +1353,380 @@ describe('watchEffectAsyncLight', () => {
     await abortTest(false)
     isImmediateBranchCleanup = 1
     await abortTest(false)
+  })
+
+  test('effect nesting', async () => {
+    async function awaitChildEffectCompletion(e: ReactiveEffectAsync) {
+      await e.awaitCompletion()
+      return Promise.all(
+        // @ts-ignore
+        e.children?.map(c => c.awaitCompletion(true)) || [],
+      )
+    }
+
+    const v2 = ref(2)
+    const v3 = ref(3)
+    const v4 = ref(4)
+    const v5 = ref(5)
+    const v6 = ref(6)
+    const v7 = ref(7)
+    const v8 = ref(8)
+    const v9 = ref(9)
+    var _v4 = 0
+    var _v5 = 0
+    var _v6 = 0
+    var _v7 = 0
+    var _v8 = 0 as any
+
+    var _if = 1
+    var e1, e2, en1, en2, en3
+    var e_run = 0,
+      e1_run = 0,
+      e2_run = 0,
+      en1_run = 0,
+      en2_run = 0,
+      en3_run = 0
+    var first_e2: ReturnType<typeof watchEffectAsyncLight>
+    var sequence: any[] = []
+    var en1_runOnUpdate = 0
+
+    var e = watchEffectAsyncLight(
+      async (x: AsyncEffectHelperInterface) => {
+        sequence.push('e')
+        ++e_run
+        v2.value
+        await x.resume(sleep(1))
+        var v = v3.value + 10
+        e1 = watchEffectAsyncLight(async x => {
+          sequence.push('e1')
+          ++e1_run
+          await x.resume(sleep(1))
+          await x.resume(sleep(50))
+          _v4 = v4.value + v
+        })
+        await x.resume(sleep(1))
+
+        if (_if) {
+          en1 = watchEffectAsyncLight(
+            'en1',
+            async x => {
+              sequence.push('en1')
+              ++en1_run
+              v9.v
+              await x.resume(sleep(40))
+              await x.resume(sleep(40))
+              _v5 = v5.value + v
+              await x.resume(sleep(40))
+              _v5 += 1
+            },
+            {
+              abortOldRunOnUpdate: 1,
+              runOnUpdate: en1_runOnUpdate,
+              flags: EffectFlags.AbortOnUnvisit,
+            },
+          )
+          e2 = watchEffectAsyncLight(
+            async x => {
+              sequence.push('e2')
+              ++e2_run
+              await x.resume(sleep(40))
+              await x.resume(sleep(40))
+              _v6 = v6.value + e_run
+              await x.resume(sleep(40))
+              _v6 += 1
+              v3.value
+            },
+            { abortOldRunOnUpdate: 1, runOnUpdate: 0 },
+          )
+          if (!first_e2) first_e2 = e2
+        } else {
+          en2 = watchEffectAsyncLight(
+            'en2',
+            async x => {
+              sequence.push('en2')
+              ++en2_run
+              await x.resume(sleep(40))
+              await x.resume(sleep(40))
+              _v7 = v7.value + v
+              var y = 'y' + v
+
+              en3 = watchEffectAsyncLight(
+                'en3',
+                async x => {
+                  sequence.push('en3')
+                  ++en3_run
+                  await x.resume(sleep(40))
+                  await x.resume(sleep(40))
+                  _v8 = v8.value + v + y
+                  await x.resume(sleep(40))
+                  v7.value
+                  _v8 += 1
+                },
+                { abortOldRunOnUpdate: 0, runOnUpdate: 1 },
+              )
+
+              await x.resume(sleep(40))
+              _v7 += 1
+            },
+            {
+              abortOldRunOnUpdate: 0,
+              runOnUpdate: 1,
+              flags: EffectFlags.REENTRANT | EffectFlags.PersistentChildEffect,
+            },
+          )
+        }
+
+        await x.resume(sleep(25))
+        v9.v
+      },
+      /* { flags: EffectFlags.ManualHandling }, */
+    )
+
+    await e.awaitCompletion()
+    expect(e1 && en1 && e2).toBeTruthy()
+    expect(en2 || en3).toBeFalsy()
+    expect(areEqual(e.children!, [e1, en1, e2])).toBeTruthy()
+    // @ts-ignore
+    expect(areEqual(e.getchildEffectIds(), ['', 'en1', ''])).toBeTruthy()
+    // @ts-ignore
+    expect(areEqual(e.getDeps(), [v2, v3, v9])).toBe(true)
+    expect(e1!.runs.size + e2!.runs.size + en1!.runs.size).toBe(3)
+    // @ts-ignore
+    expect(areEqual(e1?.getDeps(), [])).toBe(true)
+    // @ts-ignore
+    expect(areEqual(e2?.getDeps(), [])).toBe(true)
+    // @ts-ignore
+    expect(areEqual(en1?.getDeps(), [])).toBe(true)
+    expect(areEqual(sequence, ['e', 'e1', 'en1', 'e2'])).toBeTruthy()
+    await awaitChildEffectCompletion(e)
+    expect(e1!.runs.size + e2!.runs.size + en1!.runs.size).toBe(0)
+    // @ts-ignore
+    expect(areEqual(e1?.getDeps(), [v4])).toBe(true)
+    // @ts-ignore
+    expect(areEqual(e2?.getDeps(), [v6, v3])).toBe(true)
+    // @ts-ignore
+    expect(areEqual(en1?.getDeps(), [v9, v5])).toBe(true)
+
+    sequence = []
+    let e1_prev = e1 as any
+    let en1_prev = en1 as any
+    let e2_prev = e2 as any
+    ++v2.value
+    await e.awaitCompletion()
+    expect(e.runs.size).toBe(0)
+    expect(e1!.runs.size).toBe(1)
+    expect(en1!.runs.size).toBe(0)
+    expect(
+      e2!.runs.size,
+      'unnamed effects are always recreated and never updated',
+    ).toBe(1)
+    expect(e1_prev === e1).toBeFalsy()
+    expect(e2_prev === e2).toBeFalsy()
+    expect(en1_prev === en1).toBeTruthy()
+    expect(e1_prev.flags & EffectFlags.STOP).toBeTruthy()
+    expect(e2_prev.flags & EffectFlags.STOP).toBeTruthy()
+    expect(en1_prev.flags & EffectFlags.STOP).toBeFalsy()
+    await awaitChildEffectCompletion(e)
+    expect(e1!.runs.size + e2!.runs.size + en1!.runs.size).toBe(0)
+    expect(areEqual(e.children!, [e1, en1, e2])).toBeTruthy()
+    expect(areEqual(sequence, ['e', 'e1', 'e2'])).toBeTruthy()
+
+    sequence = []
+    ++v5.value
+    await nextTick()
+    expect(e.runs.size + e1!.runs.size + e2!.runs.size).toBe(0)
+    expect(en1!.runs.size).toBe(1)
+    await en1!.awaitCompletion()
+    expect(areEqual(sequence, ['en1'])).toBeTruthy()
+
+    sequence = []
+    ++v6.value
+    await nextTick()
+    expect(e.runs.size + e1!.runs.size + en1!.runs.size).toBe(0)
+    expect(e2!.runs.size).toBe(1)
+    expect(areEqual(sequence, ['e2'])).toBeTruthy()
+    await sleep(95)
+    expect(_v6).toBe(9) // 7 + 2
+    await e2!.awaitCompletion()
+    expect(_v6).toBe(10)
+    expect(e2!.runs.size).toBe(0)
+
+    // expect non-persistent child to wait for its parent to init its execution if common dep trigger
+    sequence = []
+    expect(
+      e.flags & (ReactiveFlags2.Dirty + e2!.flags) & ReactiveFlags2.Dirty,
+    ).toBe(0)
+    ++v3.value
+    expect(
+      (e.flags & ReactiveFlags2.Dirty) + (e2!.flags & ReactiveFlags2.Dirty),
+    ).toBe(ReactiveFlags2.Dirty * 2)
+    await nextTick()
+    expect(e.runs.size).toBe(1)
+    expect(e2!.runs.size).toBe(0)
+    await sleep(20)
+    expect(e.runs.size).toBe(1)
+    expect(e2!.runs.size).toBe(1)
+    await e2!.awaitCompletion()
+    expect(areEqual(sequence, ['e', 'e1', 'e2'])).toBeTruthy()
+    expect(e.runs.size + e2!.runs.size).toBe(0)
+
+    sequence = []
+    expect(
+      e.flags & (ReactiveFlags2.Dirty + en1!.flags) & ReactiveFlags2.Dirty,
+    ).toBe(0)
+    let _v9 = v9 as any
+    if (_v9.subs.effectId !== 'en1') {
+      let s1 = _v9.subs
+      let s2 = s1.nextSub
+      s1.prevSub = s2
+      s2.nextSub = s1
+      s1.nextSub = undefined
+      s2.prevSub = undefined
+      s2.subsTail = s1
+      _v9.subs = s2
+    }
+    expect(areEqual(_v9.getSubs(), [en1, e])).toBeTruthy()
+    ++v9.value
+    expect(
+      (e.flags & ReactiveFlags2.Dirty) + (en1!.flags & ReactiveFlags2.Dirty),
+    ).toBe(ReactiveFlags2.Dirty * 2)
+    await nextTick()
+    expect(e.runs.size).toBe(1)
+    expect(en1!.runs.size).toBe(0)
+    await sleep(20)
+    expect(e.runs.size).toBe(1)
+    expect(en1!.runs.size).toBe(1)
+    await en1!.awaitCompletion()
+    expect(areEqual(sequence, ['e', 'e1', 'en1', 'e2'])).toBeTruthy()
+    expect(e.runs.size + en1!.runs.size).toBe(0)
+
+    // abortOldRunOnUpdate
+    sequence = []
+    en1_runOnUpdate = 1
+    ++v5.value
+    await nextTick()
+    expect(e.runs.size).toBe(0)
+    expect(en1!.runs.size).toBe(1)
+    ++v2.value
+    await nextTick()
+    expect(e.runs.size).toBe(1)
+    expect(en1!.runs.size).toBe(1)
+    en1_prev = en1 as any
+    let en1_run_prev = getFirstKey(en1!.runs) as any
+    await sleep(20)
+    expect(e.runs.size).toBe(1)
+    expect(en1!.runs.size).toBe(1)
+    expect(en1_run_prev === getFirstKey(en1!.runs)).toBeFalsy()
+    expect(en1_run_prev.flags & RunInfoFlags.Aborted).toBeTruthy()
+    await awaitChildEffectCompletion(e)
+    expect(e.runs.size).toBe(0)
+    expect(en1!.runs.size).toBe(0)
+    expect(areEqual(sequence, ['en1', 'e', 'e1', 'en1', 'e2'])).toBeTruthy()
+    expect(en1_prev === en1).toBeTruthy()
+
+    // unnamed effects are stopped on parent run start
+    sequence = []
+    e1_prev = e1 as any
+    ++v4.value
+    await nextTick()
+    expect(e.runs.size).toBe(0)
+    expect(e1!.runs.size).toBe(1)
+    ++v2.value
+    await nextTick()
+    expect(e.runs.size).toBe(1)
+    expect(e1!.runs.size).toBe(1)
+    await sleep(10)
+    expect(e.runs.size).toBe(1)
+    expect(e1!.runs.size).toBe(1)
+    expect(e1_prev === e1).toBeFalsy()
+    expect(e1_prev.flags & EffectFlags.STOP).toBeTruthy()
+    await awaitChildEffectCompletion(e)
+    expect(e.runs.size).toBe(0)
+    expect(e1!.runs.size).toBe(0)
+
+    // new children
+    _if = 0
+    en1_runOnUpdate = 0
+    ++v5.value
+    await nextTick()
+    expect(en1!.runs.size).toBe(1)
+    en1_run_prev = getFirstKey(en1!.runs) as any
+    ++v2.value
+    await e.awaitCompletion()
+    expect(en1!.runs.size).toBe(0)
+    expect(en1_run_prev.flags & RunInfoFlags.Aborted).toBeTruthy()
+    expect(en1!.flags & EffectFlags.PausedOnUnvisit).toBeTruthy()
+    expect(areEqual(e.children!, [e1, en2, en1])).toBeTruthy()
+    expect(en2).toBeTruthy()
+    expect(en3).toBe(undefined)
+    expect(en2!.runs.size).toBe(1)
+    await en2!.awaitCompletion()
+    expect(areEqual(e.children!, [e1, en2, en1])).toBeTruthy()
+    expect(areEqual(en2!.children!, [en3])).toBeTruthy()
+    expect(en3!.runs.size).toBe(1)
+    await en3!.awaitCompletion()
+    // @ts-ignore
+    expect(areEqual(en3!.getDeps(), [v8, v7])).toBe(true)
+
+    // PauseOnUnvisit
+    ++v5.value
+    await sleep(5)
+    expect(
+      e.runs.size +
+        e1!.runs.size +
+        en1!.runs.size +
+        en2!.runs.size +
+        en3!.runs.size,
+    ).toBe(0)
+
+    sequence = []
+    ++v7.value
+    await nextTick()
+    expect(e.runs.size).toBe(0)
+    expect(en2!.runs.size).toBe(1)
+    expect(en3!.runs.size).toBe(0)
+    await sleep(10)
+    ++v7.value
+    await nextTick()
+    expect(en2!.runs.size).toBe(2)
+    expect(en3!.runs.size).toBe(0)
+    await sleep(100)
+    expect(en2!.runs.size).toBe(2)
+    expect(en3!.runs.size).toBe(1)
+    expect(en3!.flags & EffectFlags.ScheduleRunAfterCurrentRun).toBeTruthy()
+    en3!.abort()
+    await en2!.awaitCompletion(true)
+    expect(en2!.runs.size).toBe(0)
+    expect(en3!.runs.size).toBe(0)
+    expect(areEqual(sequence, ['en2', 'en2', 'en3'])).toBeTruthy()
+
+    ++v8.value
+    await nextTick()
+    expect(en2!.runs.size).toBe(0)
+    expect(en3!.runs.size).toBe(1)
+    en3!.abort()
+
+    _if = 1
+    sequence = []
+    ++v2.value
+    await e.awaitCompletion()
+    expect(areEqual(e.children!, [e1, en1, e2, en2])).toBeTruthy()
+    ++v6.value
+    await nextTick()
+    expect(e2!.runs.size).toBe(1)
+    e2!.abort()
+    ++v7.value
+    await nextTick()
+    expect(en2!.runs.size).toBe(1)
+    expect(en3!.runs.size).toBe(0)
+    en2!.abort(false)
+    await nextTick()
+    expect(
+      en3!.runs.size,
+      'temporarily paused dirty children are resumed on parent abort',
+    ).toBe(1)
+    en3!.abort()
+
+    expect(`An effectId is recommended for nested effects`).toHaveBeenWarned()
   })
 })
