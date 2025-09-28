@@ -102,7 +102,6 @@ export {
   WatcherEffect,
   watchEffectAsyncLight,
   watchEffectAsyncLightest,
-  watchEffectLight,
   type WatchOptions,
   type WatchStopHandle,
   type WatchHandle,
