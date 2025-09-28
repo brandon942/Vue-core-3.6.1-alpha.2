@@ -230,6 +230,9 @@ export type {
   Reactive,
   WatchEffectAsyncOptions,
   WatchEffectAsyncOptionsLight,
+  AsyncEffectFunction,
+  AsyncEffectHelperInterface,
+  ListedDependencies,
 } from '@vue/reactivity'
 export type {
   MultiWatchSources,

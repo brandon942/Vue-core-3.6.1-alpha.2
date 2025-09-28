@@ -56,7 +56,7 @@ export const enum EffectFlags {
   PAUSED = 1 << 8,
   STOP = 1 << 9,
   // sync:
-  HasDepConstraint = 1 << 16, // this is deliberate - sync effects can redefine async-specific flags
+  HasDepConstraint = 1 << 16, // this is deliberate - sync effects can redefine async-specific flags - not yet implemented
 
   // async:
   ASYNC = 1 << 10,
@@ -76,13 +76,11 @@ export const enum EffectFlags {
   ManualHandling = 1 << 24,
   StopEffectIfNoDeps = 1 << 25,
   // nested effects
-  //   NestedEffect = 1 << 26, // replaced with "parent" prop
   PersistentChildEffect = 1 << 26,
   PausedOnUnvisit = 1 << 27,
   AbortOnUnvisit = 1 << 28,
   Unvisited = 1 << 29,
-  //   AbortOnUpdate = 1 << 29, // replaced by "AbortCurrent" option
-  // 1 << 29 should be the last flag so that flags remains an unboxed SMI
+  // 1 << 29 should be the last flag if the number is to remain unboxed
 }
 
 export class ReactiveEffect<T = any>
@@ -436,7 +434,7 @@ export interface AsyncEffectHelperInterface {
   cache: any
 }
 export type ListedDependencies =
-  | ReactiveNode // ref
+  | ReactiveNode
   | Ref
   | Array<ReactiveNode | Ref | [obj: Record<any, any>, prop: string]>
   | ((...any: any) => any)
@@ -466,16 +464,10 @@ const enum BranchFlags {
   INACTIVE = 1 << 2,
   ISSYNCHRONOUS = 1 << 3,
 }
-const enum RunCause {
-  Manual = 0,
-  DepTrigger = 1,
-  Initial = 2,
-  ChildUpdate = 4,
-}
 
 // Globals ----------------------------------------------------------------------------------------------------------
 let DepBranchMap: WeakMap<ReactiveNode, BranchInfo | BranchInfo[]> =
-  new WeakMap() // used for dirtying branches
+  new WeakMap()
 
 if (__DEV__) {
   var ReactiveEffectIdCtr = 0
@@ -556,7 +548,7 @@ export class AsyncEffectHelper implements AsyncEffectHelperInterface {
   private thenHandler(result: any) {
     let { effect, runInfo, branch, prevBranch } = this
     if (runInfo.flags & (RunInfoFlags.Aborted | RunInfoFlags.Ended)) {
-      return new Promise(NOOP) // a never resolving promise stops the chain
+      return new Promise(NOOP)
     }
     let isLivetracking = effect.flags & EffectFlags.LIVETRACKING
     if (isLivetracking) {
@@ -587,7 +579,7 @@ export class AsyncEffectHelper implements AsyncEffectHelperInterface {
       } else {
         setActiveSub()
       }
-      effect.activeRun = undefined // must come after endTracking
+      effect.activeRun = undefined
       effect.activeBranch = undefined
       let resumingPromise = something.then(
         this.thenHandlerBound ||
@@ -601,7 +593,6 @@ export class AsyncEffectHelper implements AsyncEffectHelperInterface {
           return
         }
         if (activeSub === effect) {
-          // already tracking, so this is not a task callback
           return something(...args)
         }
         const prevEffect = isLivetracking
@@ -655,7 +646,7 @@ export class AsyncEffectHelper implements AsyncEffectHelperInterface {
         collectingDeps: new Set(),
         currentNumVisits: 0,
         parentBranch: branch,
-        children: [], // children are always active children
+        children: [],
         collectingChildren: [],
       }
       if (__DEV__) branchInfo.ID = branchID
@@ -663,7 +654,7 @@ export class AsyncEffectHelper implements AsyncEffectHelperInterface {
       hasChanges = true
     } else {
       hasChanges = branchInfo.flags & (BranchFlags.DIRTY | BranchFlags.RUNNING)
-      branchInfo.parentBranch = branch // parent can differ from run to run
+      branchInfo.parentBranch = branch
     }
 
     let collectingChildren = branch?.collectingChildren
@@ -711,7 +702,6 @@ export class AsyncEffectHelper implements AsyncEffectHelperInterface {
           }
         }
 
-        // cleanup
         let branchClenupsImmediate =
           runInfo.immediateBranchCleanups?.get(branchInfo)
         if (branchClenupsImmediate) {
@@ -771,7 +761,7 @@ export class AsyncEffectHelper implements AsyncEffectHelperInterface {
           if (isLivetracking && !collected.has(dep)) {
             link(dep, effect)
           }
-          collected.add(dep) // must come after link()
+          collected.add(dep)
         }
         for (const child of branchInfo.children) {
           retrackBranchDepsAndMarkAsVisited(child)
@@ -844,7 +834,6 @@ export class ReactiveEffectAsync
   branches?: Map<string, BranchInfo> = undefined
   abortedRun?: AsyncRunInfo
   deferredCleanups?: CleanupHandler[]
-  //   children?: Map<string, ReactiveEffect | ReactiveEffectAsync>
   children?: Array<ReactiveEffectNestableInterface>
   parent?: ReactiveEffectNestableInterface
   private runIdCtr?: number
@@ -894,9 +883,10 @@ export class ReactiveEffectAsync
       this.branches = new Map()
     }
 
-    /* if (__DEV__ && activeSub) {
-      warn(`watchEffectAsync() should never be used inside another effect `)
-    } */
+    if (__DEV__ && activeSub && activeSub instanceof ReactiveEffect) {
+      // watchEffect() nesting not implemented
+      warn(`watchEffectAsync() cannot be inside watchEffect() `)
+    }
 
     if (__DEV__) {
       this.runIdCtr = 0
@@ -985,8 +975,6 @@ export class ReactiveEffectAsync
   }
 
   addChild(child: ReactiveEffectNestableInterface): void {
-    // ?? Array or Map??
-    // What about loops? - behave the same way as with the 1st call
     let children = (this.activeRun!.collectingChildren ??= [])
     pushUnique(children, child)
     child.parent = this
@@ -1009,7 +997,7 @@ export class ReactiveEffectAsync
       if (!this.runs.size) {
         this.flags &= ~EffectFlags.RUNNING
         if (!toRecurse && flags & EffectFlags.ScheduleRunAfterCurrentRun) {
-          this.scheduleRun(false)
+          this.scheduleRun(true)
           const ScheduledNewRunOnAbort =
             EffectFlags.AbortRunOnRetrigger |
             EffectFlags.ScheduleRunAfterCurrentRun
@@ -1028,7 +1016,6 @@ export class ReactiveEffectAsync
 
       let cleanupError1: any
       if (flags & EffectFlags.EnabledManualBranching) {
-        // Branch dependencies
         for (const [branchInfo, numVisits] of run.visitedBranches!) {
           branchInfo.currentNumVisits -= numVisits
           if (aborted) {
@@ -1039,7 +1026,6 @@ export class ReactiveEffectAsync
             throw new Error('branchInfo.currentNumVisits < 0')
           }
         }
-        // Branch cleanups on abort
         if (aborted) {
           try {
             let immediate = run.immediateBranchCleanups
@@ -1100,6 +1086,10 @@ export class ReactiveEffectAsync
 
   scheduleRun(forceRun?: any, forceSync?: any): any {
     if (forceSync) {
+      this.flags &= ~(
+        EffectFlags.ScheduleRunAfterCurrentRun |
+        EffectFlags.ScheduleRecursiveRerun
+      )
       this.run()
       return
     }
@@ -1119,7 +1109,7 @@ export class ReactiveEffectAsync
         !(flags & (EffectFlags.STOP | EffectFlags.PAUSED)) &&
         (flags & EffectFlags.REENTRANT || !(flags & EffectFlags.RUNNING))
       ) {
-        if (!forceRun || this.dirty) {
+        if (forceRun || this.dirty) {
           this.run()
         }
       }
@@ -1249,7 +1239,7 @@ export class ReactiveEffectAsync
           }
           endTracking(this, prevEffect)
         }
-        this.activeRun = undefined // must come after endTracking
+        this.activeRun = undefined
         this.activeBranch = undefined
         runInfo.flags &= ~RunInfoFlags.RunningInitialSyncPart
       }
@@ -1290,7 +1280,6 @@ export class ReactiveEffectAsync
           endTracking(this, prevEffect)
         }
       } else {
-        // live tracking mode
         const lastTrackedDepLink = runInfo.lastTrackedDepLink
         this.depsTail = lastTrackedDepLink
         let toRemove =
@@ -1303,7 +1292,6 @@ export class ReactiveEffectAsync
           depLink.tracking_Islinked = false
           depLink = depLink.nextDep
         }
-        // Effect dependencies
         if (isReentrant) {
           // remove unused that are not in collectedDeps of any concurrent run
           while (toRemove !== undefined) {
@@ -1322,7 +1310,6 @@ export class ReactiveEffectAsync
             }
           }
         } else {
-          // just remove unused
           while (toRemove !== undefined) {
             toRemove = unlink(toRemove, this)
           }
@@ -1356,10 +1343,7 @@ export class ReactiveEffectAsync
       let firstRun = getFirstKey(this.runs)
       return firstRun!.promise!
     }
-    if (
-      flags & EffectFlags.STOP ||
-      flags & EffectFlags.ScheduleRunAfterCurrentRun
-    ) {
+    if (flags & (EffectFlags.STOP | EffectFlags.ScheduleRunAfterCurrentRun)) {
       return
     }
 
@@ -1423,7 +1407,7 @@ export class ReactiveEffectAsync
               // Do not notify if dep has not been collected yet
               return
             } else {
-              // Dep has been collected. so an outdated version has been used.
+              // Dep has been collected. so an outdated value has been used.
             }
           }
 
@@ -1490,7 +1474,6 @@ export class ReactiveEffectAsync
         }
         collected.add(dep)
 
-        // branch dependencies
         let activeBranch = this.activeBranch
         if (activeBranch) {
           activeBranch.collectingDeps.add(dep)
@@ -1586,12 +1569,10 @@ export const prepareChildrenOnParentRun = (
     for (let i = children.length - 1; i >= 0; --i) {
       let child = children[i]
       if (!child.effectId) {
-        // stop unnamed child effects at start
         children[i].stop()
-        //   children.splice(i, 1) // needed?
+        children.splice(i, 1)
       } else {
         // pause non-persistent child effects until they are reached and updated
-        // because they shall not run with an outdated closure
         pauseOnUnvisit(child, true, false)
       }
     }
@@ -1670,8 +1651,6 @@ const pauseOnUnvisit = (
         EffectFlags.Unvisited)
     )
   ) {
-    // pause non-persistent child effects until they are reached and updated
-    // because they shall not run with an outdated closure
     child.flags |= EffectFlags.PAUSED | EffectFlags.PausedOnUnvisit
     if (allowAbort) {
       ;(child as ReactiveEffectAsync).abortRunsIfWanted(

@@ -11,7 +11,7 @@ export interface ReactiveNode {
   subs?: Link
   subsTail?: Link
   flags: ReactiveFlags
-  activeSubLink?: Link // used to avoid searching for a link in the deps-link chain and to avoid creatiing link duplicates
+  activeSubLink?: Link
 }
 
 export interface Link {
@@ -21,8 +21,8 @@ export interface Link {
   nextSub: Link | undefined
   prevDep: Link | undefined
   nextDep: Link | undefined
-  tracking_Islinked?: Boolean // used to optimize detection of tracked links
-  activeSubLinkPrev?: Link // used to support effect nesting
+  tracking_Islinked?: Boolean
+  activeSubLinkPrev?: Link
 }
 
 export const enum ReactiveFlags {

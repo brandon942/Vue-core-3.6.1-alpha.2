@@ -13,35 +13,17 @@ import type { ComputedRef } from './computed'
 import { ReactiveFlags as ReactiveFlags2 } from './constants'
 import {
   AsyncEffectFunction,
-  DebuggerEvent,
   type DebuggerOptions,
   EffectFlags,
   ListedDependencies,
   ReactiveEffect,
   ReactiveEffectAsync,
   ReactiveEffectNestableInterface,
-  ReactiveEffectOptions,
   cleanup,
-  observeDependenciesIn,
-  prepareChildrenOnParentRun,
-  pushUnique,
-  setConstraint,
-  updateChildEffects,
 } from './effect'
 import { isReactive, isShallow } from './reactive'
 import { type Ref, isRef } from './ref'
-import {
-  activeSub,
-  checkDirty,
-  endTracking,
-  link,
-  Link,
-  ReactiveFlags,
-  ReactiveNode,
-  setActiveSub,
-  startTracking,
-  unlink,
-} from './system'
+import { activeSub, setActiveSub } from './system'
 import { warn } from './warning'
 import { activeEffectScope } from './effectScope'
 
@@ -92,14 +74,14 @@ export interface WatchHandle extends WatchStopHandle {
 // initial value for watchers to trigger on undefined initial values
 const INITIAL_WATCHER_VALUE = {}
 
-let activeWatcher: WatcherEffect | WatcherEffectAsync | undefined = undefined
+let activeWatcher: WatcherEffect | ReactiveEffectAsync | undefined = undefined
 
 /**
  * Returns the current active effect if there is one.
  */
 export function getCurrentWatcher():
   | ReactiveEffect<any>
-  | WatcherEffectAsync
+  | ReactiveEffectAsync
   | undefined {
   return activeWatcher
 }
@@ -357,449 +339,6 @@ export function traverse(
   return value
 }
 
-// Effect Light (nestable) ------------------------------------------------------------------------------------------------------------------------
-export class WatcherEffectLight<T = any>
-  implements
-    ReactiveEffectOptions,
-    ReactiveNode,
-    ReactiveEffectNestableInterface
-{
-  deps: Link | undefined = undefined
-  depsTail: Link | undefined = undefined
-  subs: Link | undefined = undefined
-  subsTail: Link | undefined = undefined
-  flags: number =
-    ReactiveFlags.Watching |
-    ReactiveFlags.Dirty |
-    EffectFlags.TriggerSynchronously
-
-  /**
-   * @internal
-   */
-  cleanups: (() => void)[] = []
-  /**
-   * @internal
-   */
-  cleanupsLength = 0
-
-  // dev only
-  onTrack?: (event: DebuggerEvent) => void
-  // dev only
-  onTrigger?: (event: DebuggerEvent) => void
-
-  // @ts-expect-error
-  fn(): T {}
-
-  children?: ReactiveEffectNestableInterface[]
-  collectingChildren?: Array<ReactiveEffectNestableInterface>
-  depConstraint?: WeakSet<ReactiveNode> = undefined
-
-  constructor(
-    effectFunction: () => any,
-    flags: number,
-    public effectId?: string,
-    public isChildEffect?: any,
-  ) {
-    if (effectFunction !== undefined) {
-      this.fn = effectFunction
-    }
-
-    if (!isChildEffect && activeEffectScope) {
-      link(this, activeEffectScope)
-    }
-    this.flags |= flags
-
-    if (__DEV__ && activeSub && !isChildEffect) {
-      console.error(`watchEffect() should never be used inside another effect `)
-      // see: effect.specs.ts#'debug: the call sequence of onTrigger'
-    }
-    if (__DEV__) {
-      // @ts-ignore
-      this.EffectID = ++ReactiveEffectIdCtr
-      // @ts-ignore
-      this.getDeps = () => {
-        // @ts-ignore
-        let d = this.deps
-        let a = []
-        let i = 0
-        while (d) {
-          if (++i > 200) {
-            console.warn('possible linked list loop')
-            break
-          }
-          a.push(d.dep)
-          d = d.nextDep
-        }
-        return a
-      }
-    }
-  }
-
-  get active(): boolean {
-    return !(this.flags & EffectFlags.STOP)
-  }
-
-  pause(toIncludeChildren: any = true): void {
-    this.flags |= EffectFlags.PAUSED
-    if (toIncludeChildren) {
-      let children = this.children
-      if (children) {
-        for (const child of children) {
-          child.pause(toIncludeChildren)
-        }
-      }
-    }
-  }
-
-  resume(): any {
-    let flags = this.flags
-    if (flags & EffectFlags.PAUSED) {
-      this.flags &= ~(EffectFlags.PAUSED | EffectFlags.PausedOnUnvisit)
-      if (
-        flags &
-        (EffectFlags.IsScheduledRun | EffectFlags.ScheduleRecursiveRerun)
-      ) {
-        return true
-      } else {
-        if (flags & (ReactiveFlags.Dirty | ReactiveFlags.Pending)) {
-          return this.notify()
-        }
-      }
-    }
-  }
-  stop(): void {
-    if (!this.active) {
-      return
-    }
-    this.flags = EffectFlags.STOP
-    let dep = this.deps
-    while (dep !== undefined) {
-      dep = unlink(dep, this)
-    }
-    const sub = this.subs
-    if (sub !== undefined) {
-      unlink(sub)
-    }
-    cleanup(this)
-    let children = this.children
-    if (children) {
-      for (const child of children) {
-        child.stop()
-      }
-      children.length = 0
-    }
-  }
-
-  get dirty(): boolean {
-    const flags = this.flags
-    if (flags & ReactiveFlags.Dirty) {
-      return true
-    }
-    if (flags & ReactiveFlags.Pending) {
-      if (checkDirty(this.deps!, this)) {
-        this.flags = flags | ReactiveFlags.Dirty
-        return true
-      } else {
-        this.flags = flags & ~ReactiveFlags.Pending
-      }
-    }
-    return false
-  }
-
-  run(): T {
-    if (!this.active) {
-      return this.fn()
-      //   return undefined as T
-    }
-    if (this.cleanupsLength) {
-      const prevSub = setActiveSub()
-      try {
-        cleanup(this)
-      } finally {
-        setActiveSub(prevSub)
-      }
-    }
-    this.flags &= ~(
-      EffectFlags.IsScheduledRun | EffectFlags.ScheduleRecursiveRerun
-    )
-
-    prepareChildrenOnParentRun(this)
-
-    const currentEffect = activeWatcher
-    activeWatcher = this as any
-    const prevSub = startTracking(this)
-    try {
-      return this.fn()
-    } finally {
-      activeWatcher = currentEffect
-      endTracking(this, prevSub)
-
-      let children = this.children
-      let collectingChildren = this.collectingChildren
-      if (collectingChildren || children) {
-        updateChildEffects(false, this, collectingChildren)
-        if (children) {
-          this.collectingChildren = children
-          children.length = 0
-        }
-      }
-
-      const flags = this.flags
-      if (
-        (flags & (ReactiveFlags.Recursed | EffectFlags.ALLOW_RECURSE)) ===
-        (ReactiveFlags.Recursed | EffectFlags.ALLOW_RECURSE)
-      ) {
-        this.flags =
-          (flags & ~ReactiveFlags.Recursed) | EffectFlags.ScheduleRecursiveRerun
-        this.notify()
-      } else {
-        // unlink effect if no deps so that it can be gc'd
-        if (
-          !this.deps &&
-          flags & EffectFlags.StopEffectIfNoDeps &&
-          !(flags & EffectFlags.ManualHandling)
-        ) {
-          this.stop()
-        }
-      }
-    }
-  }
-
-  notify(dep?: ReactiveNode): void {
-    // if (!(this.flags & EffectFlags.PAUSED) && this.dirty) {
-    //   this.run()
-    // }
-    let flags = this.flags
-    if (!(flags & EffectFlags.PAUSED)) {
-      try {
-        let sync =
-          flags &
-          (EffectFlags.ScheduleRecursiveRerun |
-            EffectFlags.TriggerSynchronously)
-        this.scheduleRun(false, sync)
-      } finally {
-        this.flags &= ~ReactiveFlags.Pending
-      }
-    }
-  }
-
-  /**
-   * @internal
-   */
-  track(dep: ReactiveNode): any {
-    var { flags, depConstraint: constraint } = this
-    if (flags & EffectFlags.STOP) {
-      return false
-    } else {
-      var toTrack = true
-      if (constraint) {
-        if (flags & EffectFlags.DepConstraintIsBlacklist) {
-          toTrack = !constraint.has(dep)
-        } else {
-          toTrack = constraint.has(dep)
-        }
-      }
-      return toTrack
-    }
-  }
-
-  setConstraint(
-    dependencies?: ListedDependencies,
-    isBlacklist: any = true,
-  ): void {
-    setConstraint(this, dependencies, isBlacklist)
-  }
-
-  addChild(child: ReactiveEffectNestableInterface): void {
-    // ?? Array or Map??
-    // What about loops? - behave the same way as with the 1st call
-    let children = (this.collectingChildren ??= [])
-    pushUnique(children, child)
-    child.parent = this
-  }
-
-  scheduleRun(forceRun?: any, forceSync?: any): any {
-    if (forceSync) {
-      this.run()
-      return 1
-    }
-    if (this.flags & EffectFlags.IsScheduledRun) return 2
-    this.flags |= EffectFlags.IsScheduledRun
-    queueMicrotask(() => {
-      let flags = this.flags
-      if (!(flags & EffectFlags.IsScheduledRun)) {
-        return
-      }
-      this.flags &= ~(
-        EffectFlags.IsScheduledRun | EffectFlags.ScheduleRecursiveRerun
-      )
-      if (
-        !(flags & (EffectFlags.STOP | EffectFlags.PAUSED | EffectFlags.RUNNING))
-      ) {
-        if (!forceRun || this.dirty) {
-          this.run()
-        }
-      }
-    })
-    return 2
-  }
-}
-
-export interface WatchOptionsLight extends DebuggerOptions {
-  call?: WatchOptions['call']
-  flags?: number
-  toTriggerSynchronously?: any
-  runOnUpdate?: any | 'async'
-  whitelist?: ListedDependencies
-  blacklist?: ListedDependencies
-  isPersistentChildEffect?: any
-  manualHandling?: any
-}
-
-export function watchEffectLight(
-  effectFunction: () => any,
-  options?: WatchOptionsLight,
-): ReactiveEffect
-export function watchEffectLight(
-  effectId: string,
-  effectFunction: () => any,
-  options?: WatchOptionsLight,
-): ReactiveEffect
-export function watchEffectLight(
-  effectId: string | (() => any),
-  effectFunction?: (() => any) | WatchOptionsLight,
-  options?: WatchOptionsLight,
-): ReactiveEffect {
-  if (typeof effectId === 'function') {
-    options = effectFunction as WatchOptionsLight
-    effectFunction = effectId
-    effectId = undefined as any
-  }
-
-  if (options) {
-    var {
-      call,
-      blacklist,
-      whitelist,
-      flags = 0,
-      runOnUpdate = true,
-      manualHandling,
-      toTriggerSynchronously = true,
-      isPersistentChildEffect,
-    } = options
-    if (call) {
-      let effectFunction_ = effectFunction
-      effectFunction = () =>
-        call!(effectFunction_ as any, WatchErrorCodes.WATCH_CALLBACK)
-    }
-    if (manualHandling) flags |= EffectFlags.ManualHandling
-    if (toTriggerSynchronously) flags |= EffectFlags.TriggerSynchronously
-    if (isPersistentChildEffect) flags |= EffectFlags.PersistentChildEffect
-  } else {
-    var flags = 0
-    var runOnUpdate: any = true
-  }
-
-  let effectFunction2 = () => {
-    if ((effect as any).cleanupsLength) {
-      const prevSub = setActiveSub()
-      try {
-        cleanup(effect as any)
-      } finally {
-        setActiveSub(prevSub)
-      }
-    }
-    const currentEffect = activeWatcher
-    activeWatcher = effect as any
-    try {
-      ;(effectFunction as any)()
-    } finally {
-      activeWatcher = currentEffect
-    }
-  }
-
-  let isChildEffect, toResume
-  let effect: ReactiveEffectNestableInterface
-  if (activeSub) {
-    isChildEffect = true
-    if (!effectId) {
-      if (__DEV__) {
-        warn(`An effectId is recommended for nested effects`)
-      }
-      //   return null as any as ReactiveEffectAsync
-    } else {
-      let childEffects = (activeSub as ReactiveEffectNestableInterface).children
-      if (childEffects) {
-        for (let i = 0; i < childEffects.length; i++) {
-          let effect_ = childEffects[i]
-          if (effect_.effectId === effectId) {
-            effect = effect_
-            ;(activeSub as ReactiveEffectNestableInterface).addChild(effect)
-            effect.fn = effectFunction2 as any
-            effect.flags &= ~EffectFlags.Unvisited
-            flags = effect.flags
-            toResume = flags & EffectFlags.PausedOnUnvisit
-            break
-          }
-        }
-      }
-    }
-  }
-  if (!effect!) {
-    effect = new WatcherEffectLight(
-      effectFunction2,
-      flags,
-      effectId as string,
-      isChildEffect,
-    )
-    ;(activeSub as ReactiveEffectNestableInterface)?.addChild(effect)
-  }
-
-  let constraint = blacklist || whitelist
-  if (constraint) {
-    effect.setConstraint(constraint, blacklist)
-  }
-
-  if (__DEV__ && options) {
-    effect.onTrack = options.onTrack
-    effect.onTrigger = options.onTrigger
-  }
-
-  let toRun = true
-  if (isChildEffect) {
-    let isRunning = flags & EffectFlags.RUNNING
-    if (runOnUpdate) {
-      if (isRunning && !(flags & EffectFlags.REENTRANT)) {
-        effect.flags |= EffectFlags.ScheduleRunAfterCurrentRun
-        toRun = false
-      }
-    } else {
-      toRun = effect.dirty
-    }
-    if (toResume) {
-      function resumeAll(effect: ReactiveEffectNestableInterface) {
-        effect.flags &= ~(EffectFlags.PAUSED | EffectFlags.PausedOnUnvisit)
-        let children = effect.children
-        if (children) {
-          for (const child of children) {
-            if (!(child.flags & EffectFlags.Unvisited)) {
-              resumeAll(child)
-            }
-          }
-        }
-      }
-      resumeAll(effect)
-    }
-  }
-  if (toRun) {
-    if (!(flags & EffectFlags.ManualHandling)) {
-      effect.scheduleRun(false, runOnUpdate !== 'async')
-    }
-  }
-
-  return effect as any
-}
-
 // WATCH ASYNC ------------------------------------------------------------------------------------------------------------------------
 export interface WatchEffectAsyncOptions extends WatchEffectAsyncOptionsLight {
   toLiveTrack?: any
@@ -824,70 +363,6 @@ export interface WatchEffectAsyncOptionsLight
   toAbortIfNotCalledInParentEffect?: any
 }
 
-export class WatcherEffectAsync extends ReactiveEffectAsync {
-  boundCleanup: typeof onWatcherCleanup = fn =>
-    onWatcherCleanup(fn, false, this)
-
-  constructor(
-    func: AsyncEffectFunction,
-    public options: WatchEffectAsyncOptions = EMPTY_OBJ,
-  ) {
-    const { call, onWarn } = options
-
-    let getter: AsyncEffectFunction
-
-    if (isFunction(func)) {
-      getter = x => {
-        return call ? call(func, WatchErrorCodes.WATCH_CALLBACK, [x]) : func(x)
-      }
-    } else {
-      getter = NOOP
-      __DEV__ && warnInvalidSource(func, onWarn)
-    }
-    const {
-      toLiveTrack,
-      isReentrant,
-      toAbortOnPause,
-      toAbortOnDestuct,
-      toAbortOnRetrigger,
-      toTriggerSynchronously,
-      maxConcurrentRuns,
-      enableSkipping,
-      manualHandling,
-      blacklist,
-      whitelist,
-      isPersistentChildEffect,
-      toAbortIfNotCalledInParentEffect,
-    } = options
-    let flags = 0
-    if (toLiveTrack) flags |= EffectFlags.LIVETRACKING
-    if (isReentrant) flags |= EffectFlags.REENTRANT
-    if (toAbortOnPause) flags |= EffectFlags.AbortRunOnPause
-    if (toAbortOnDestuct) flags |= EffectFlags.AbortRunOnStop
-    if (toAbortOnRetrigger) flags |= EffectFlags.AbortRunOnRetrigger
-    if (enableSkipping) flags |= EffectFlags.EnabledManualBranching
-    if (manualHandling) flags |= EffectFlags.ManualHandling
-    if (toTriggerSynchronously) flags |= EffectFlags.TriggerSynchronously
-    if (isPersistentChildEffect) flags |= EffectFlags.PersistentChildEffect
-    if (toAbortIfNotCalledInParentEffect) flags |= EffectFlags.AbortOnUnvisit
-
-    super(getter, flags)
-
-    let constraint = blacklist || whitelist
-    if (constraint) {
-      this.setConstraint(constraint, blacklist)
-    }
-    if (typeof maxConcurrentRuns === 'number' && maxConcurrentRuns > 0) {
-      this.maxConcurrentRuns = maxConcurrentRuns
-    }
-
-    if (__DEV__) {
-      this.onTrack = options.onTrack
-      this.onTrigger = options.onTrigger
-    }
-  }
-}
-
 export function watchEffectAsyncLight(
   effectFunction: AsyncEffectFunction,
   options?: WatchEffectAsyncOptions,
@@ -901,6 +376,8 @@ export function watchEffectAsyncLight(
   effectId: string | AsyncEffectFunction,
   effectFunction?: AsyncEffectFunction | WatchEffectAsyncOptionsLight,
   options?: WatchEffectAsyncOptions,
+  constructor?: any,
+  ...additionalConstructorArgs: any[]
 ): ReactiveEffectAsync {
   if (typeof effectId === 'function') {
     options = effectFunction as WatchEffectAsyncOptionsLight
@@ -938,6 +415,9 @@ export function watchEffectAsyncLight(
     effectId as any,
     effectFunction as any,
     options,
+    constructor,
+    // @ts-ignore
+    ...additionalConstructorArgs,
   )
 }
 
@@ -954,6 +434,8 @@ export function watchEffectAsyncLightest(
   effectId: string | AsyncEffectFunction,
   effectFunction?: AsyncEffectFunction | WatchEffectAsyncOptionsLight,
   options?: WatchEffectAsyncOptionsLight,
+  constructor?: any,
+  ...additionalConstructorArgs: any[]
 ): ReactiveEffectAsync {
   if (typeof effectId === 'function') {
     options = effectFunction as WatchEffectAsyncOptionsLight
@@ -1006,12 +488,22 @@ export function watchEffectAsyncLightest(
     }
   }
   if (!effect!) {
-    effect = new ReactiveEffectAsync(
-      effectFunction as AsyncEffectFunction,
-      flags,
-      effectId as string,
-      isChildEffect,
-    )
+    if (constructor) {
+      effect = new constructor(
+        effectFunction as AsyncEffectFunction,
+        flags,
+        effectId as string,
+        isChildEffect,
+        ...additionalConstructorArgs,
+      )
+    } else {
+      effect = new ReactiveEffectAsync(
+        effectFunction as AsyncEffectFunction,
+        flags,
+        effectId as string,
+        isChildEffect,
+      )
+    }
     ;(activeSub as ReactiveEffectNestableInterface)?.addChild(effect)
   }
 

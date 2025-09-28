@@ -2,12 +2,14 @@ import {
   type WatchOptions as BaseWatchOptions,
   type DebuggerOptions,
   EffectFlags,
+  ReactiveEffectAsync,
   type ReactiveMarker,
   type WatchCallback,
   type WatchEffect,
   type WatchHandle,
   type WatchSource,
   WatcherEffect,
+  watchEffectAsyncLight,
 } from '@vue/reactivity'
 import { type SchedulerJob, SchedulerJobFlags, queueJob } from './scheduler'
 import { EMPTY_OBJ, NOOP, extend, isFunction, isString } from '@vue/shared'
@@ -23,11 +25,7 @@ import { queuePostRenderEffect } from './renderer'
 import { warn } from './warning'
 import type { ObjectWatchOptionItem } from './componentOptions'
 import { useSSRContext } from './helpers/useSsrContext'
-import {
-  WatchEffectAsyncOptions,
-  WatcherEffectAsync,
-  AsyncEffectFunction,
-} from '@vue/reactivity/'
+import { WatchEffectAsyncOptions, AsyncEffectFunction } from '@vue/reactivity/'
 
 export type {
   WatchHandle,
@@ -321,19 +319,31 @@ export function createPathGetter(ctx: any, path: string) {
 export interface RenderWatchEffectAsyncOptions extends WatchEffectAsyncOptions {
   flush?: 'pre' | 'post' | 'sync'
 }
-class RenderWatcherEffectAsync extends WatcherEffectAsync {
+class RenderEffectAsync extends ReactiveEffectAsync {
   job: SchedulerJob
+  forceRun?: any
 
   constructor(
-    instance: GenericComponentInstance | null,
     func: AsyncEffectFunction,
-    options: RenderWatchEffectAsyncOptions,
-    private flush: 'pre' | 'post' | 'sync' = options.flush || 'pre',
+    flags: number,
+    effectId?: string,
+    isChildEffect?: any,
+    instance?: GenericComponentInstance | null,
+    private flush: 'pre' | 'post' | 'sync' = 'pre',
   ) {
-    super(func, options)
+    super(func, flags, effectId, isChildEffect)
 
     const job: SchedulerJob = () => {
-      if (this.dirty) {
+      this.flags &= ~(
+        EffectFlags.ScheduleRunAfterCurrentRun |
+        EffectFlags.IsScheduledRun |
+        EffectFlags.ScheduleRecursiveRerun
+      )
+      let forceRun = this.forceRun
+      if (
+        !(this.flags & (EffectFlags.STOP | EffectFlags.PAUSED)) &&
+        (forceRun || this.dirty)
+      ) {
         this.run()
       }
     }
@@ -343,28 +353,50 @@ class RenderWatcherEffectAsync extends WatcherEffectAsync {
     this.job = job
   }
 
-  notify(dep?: any): void {
-    if (super.notify(dep, true)) {
-      const flags = this.flags
-      if (!(flags & EffectFlags.PAUSED)) {
-        const flush = this.flush
-        const job = this.job
-        if (flush === 'post') {
-          queuePostRenderEffect(job, undefined, job.i ? job.i.suspense : null)
-        } else if (flush === 'pre') {
-          queueJob(job, job.i ? job.i.uid : undefined, true)
-        } else {
-          job()
-        }
-      }
+  scheduleRun(forceRun?: any, forceSync?: any): any {
+    const flush = this.flush
+    if (forceSync || flush === 'sync') {
+      this.flags &= ~(
+        EffectFlags.ScheduleRunAfterCurrentRun |
+        EffectFlags.ScheduleRecursiveRerun
+      )
+      this.run()
+      return
+    }
+    if (this.flags & EffectFlags.IsScheduledRun) return
+    this.flags |= EffectFlags.IsScheduledRun
+
+    this.forceRun = forceRun
+    const job = this.job
+    if (flush === 'post') {
+      queuePostRenderEffect(job, undefined, job.i ? job.i.suspense : null)
+    } else {
+      // 'pre'
+      queueJob(job, job.i ? job.i.uid : undefined, true)
     }
   }
 }
 
 export function watchEffectAsync(
   effectFunction: AsyncEffectFunction,
-  options: RenderWatchEffectAsyncOptions = EMPTY_OBJ,
+  options?: RenderWatchEffectAsyncOptions,
+): WatchHandle
+export function watchEffectAsync(
+  effectId: string,
+  effectFunction: AsyncEffectFunction,
+  options?: RenderWatchEffectAsyncOptions,
+): WatchHandle
+export function watchEffectAsync(
+  effectId: string | AsyncEffectFunction,
+  effectFunction?: RenderWatchEffectAsyncOptions | AsyncEffectFunction,
+  options?: RenderWatchEffectAsyncOptions,
 ): WatchHandle {
+  if (typeof effectId === 'function') {
+    options = effectFunction as RenderWatchEffectAsyncOptions
+    effectFunction = effectId
+    effectId = undefined as any
+  }
+  options ??= EMPTY_OBJ
   const { flush = 'pre' } = options
   options.flags = (options.flags || 0) | EffectFlags.AbortRunOnStop
   const baseWatchOptions: BaseWatchOptions = extend({}, options)
@@ -390,17 +422,15 @@ export function watchEffectAsync(
   baseWatchOptions.call = (fn, type, args) =>
     callWithAsyncErrorHandling(fn, instance, type, args)
 
-  const effect = new RenderWatcherEffectAsync(
-    instance,
+  const effect = watchEffectAsyncLight(
+    undefined,
     effectFunction,
-    baseWatchOptions,
+    options,
+    // @ts-ignore
+    RenderEffectAsync,
+    instance,
+    flush,
   )
-
-  if (flush === 'post') {
-    queuePostRenderEffect(effect.job, undefined, instance && instance.suspense)
-  } else {
-    effect.run()
-  }
 
   const stop = effect.stop.bind(effect) as WatchHandle
   stop.pause = effect.pause.bind(effect)
@@ -417,8 +447,3 @@ export function watchEffectAsync(
 
   return stop
 }
-
-export {
-  watchEffectAsyncLight,
-  watchEffectAsyncLightest,
-} from '@vue/reactivity/'

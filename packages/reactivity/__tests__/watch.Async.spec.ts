@@ -16,8 +16,6 @@ import {
   RunInfoFlags,
   ReactiveFlags2,
   ReactiveEffectAsync,
-  WatchEffectAsyncOptionsLight,
-  watchEffectLight,
 } from '../src'
 
 var sleep = (ms = 1) => new Promise(r => setTimeout(r, ms))
@@ -601,7 +599,7 @@ describe('watchEffectAsyncLight', () => {
 
       var res2: any
       var res3: any
-      // asynchronous, async cb needed
+      // asynchronous
       await x.hasChanged(
         '_2_',
         async x => {
@@ -743,7 +741,7 @@ describe('watchEffectAsyncLight', () => {
     expect(wasRun_3).toBe(0)
     expect(final_result).toEqual(['xx', 'yy', undefined])
 
-    //   skips unchanged parts and re-tracks their deps
+    // skips unchanged parts and re-tracks their deps
     ++param.value
     // @ts-ignore
     expect(e.getDirtyBranches()).toEqual(['_0_'])
@@ -1234,7 +1232,6 @@ describe('watchEffectAsyncLight', () => {
           EffectFlags.AbortRunOnRetrigger,
       },
     )
-    const REENTRANT = e.flags & EffectFlags.REENTRANT
 
     await e.awaitCompletion()
 
@@ -1390,97 +1387,94 @@ describe('watchEffectAsyncLight', () => {
     var sequence: any[] = []
     var en1_runOnUpdate = 0
 
-    var e = watchEffectAsyncLight(
-      async (x: AsyncEffectHelperInterface) => {
-        sequence.push('e')
-        ++e_run
-        v2.value
+    var e = watchEffectAsyncLight(async (x: AsyncEffectHelperInterface) => {
+      sequence.push('e')
+      ++e_run
+      v2.value
+      await x.resume(sleep(1))
+      var v = v3.value + 10
+      e1 = watchEffectAsyncLight(async x => {
+        sequence.push('e1')
+        ++e1_run
         await x.resume(sleep(1))
-        var v = v3.value + 10
-        e1 = watchEffectAsyncLight(async x => {
-          sequence.push('e1')
-          ++e1_run
-          await x.resume(sleep(1))
-          await x.resume(sleep(50))
-          _v4 = v4.value + v
-        })
-        await x.resume(sleep(1))
+        await x.resume(sleep(50))
+        _v4 = v4.value + v
+      })
+      await x.resume(sleep(1))
 
-        if (_if) {
-          en1 = watchEffectAsyncLight(
-            'en1',
-            async x => {
-              sequence.push('en1')
-              ++en1_run
-              v9.v
-              await x.resume(sleep(40))
-              await x.resume(sleep(40))
-              _v5 = v5.value + v
-              await x.resume(sleep(40))
-              _v5 += 1
-            },
-            {
-              abortOldRunOnUpdate: 1,
-              runOnUpdate: en1_runOnUpdate,
-              flags: EffectFlags.AbortOnUnvisit,
-            },
-          )
-          e2 = watchEffectAsyncLight(
-            async x => {
-              sequence.push('e2')
-              ++e2_run
-              await x.resume(sleep(40))
-              await x.resume(sleep(40))
-              _v6 = v6.value + e_run
-              await x.resume(sleep(40))
-              _v6 += 1
-              v3.value
-            },
-            { abortOldRunOnUpdate: 1, runOnUpdate: 0 },
-          )
-          if (!first_e2) first_e2 = e2
-        } else {
-          en2 = watchEffectAsyncLight(
-            'en2',
-            async x => {
-              sequence.push('en2')
-              ++en2_run
-              await x.resume(sleep(40))
-              await x.resume(sleep(40))
-              _v7 = v7.value + v
-              var y = 'y' + v
+      if (_if) {
+        en1 = watchEffectAsyncLight(
+          'en1',
+          async x => {
+            sequence.push('en1')
+            ++en1_run
+            v9.v
+            await x.resume(sleep(40))
+            await x.resume(sleep(40))
+            _v5 = v5.value + v
+            await x.resume(sleep(40))
+            _v5 += 1
+          },
+          {
+            abortOldRunOnUpdate: 1,
+            runOnUpdate: en1_runOnUpdate,
+            flags: EffectFlags.AbortOnUnvisit,
+          },
+        )
+        e2 = watchEffectAsyncLight(
+          async x => {
+            sequence.push('e2')
+            ++e2_run
+            await x.resume(sleep(40))
+            await x.resume(sleep(40))
+            _v6 = v6.value + e_run
+            await x.resume(sleep(40))
+            _v6 += 1
+            v3.value
+          },
+          { abortOldRunOnUpdate: 1, runOnUpdate: 0 },
+        )
+        if (!first_e2) first_e2 = e2
+      } else {
+        en2 = watchEffectAsyncLight(
+          'en2',
+          async x => {
+            sequence.push('en2')
+            ++en2_run
+            await x.resume(sleep(40))
+            await x.resume(sleep(40))
+            _v7 = v7.value + v
+            var y = 'y' + v
 
-              en3 = watchEffectAsyncLight(
-                'en3',
-                async x => {
-                  sequence.push('en3')
-                  ++en3_run
-                  await x.resume(sleep(40))
-                  await x.resume(sleep(40))
-                  _v8 = v8.value + v + y
-                  await x.resume(sleep(40))
-                  v7.value
-                  _v8 += 1
-                },
-                { abortOldRunOnUpdate: 0, runOnUpdate: 1 },
-              )
+            en3 = watchEffectAsyncLight(
+              'en3',
+              async x => {
+                sequence.push('en3')
+                ++en3_run
+                await x.resume(sleep(40))
+                await x.resume(sleep(40))
+                _v8 = v8.value + v + y
+                await x.resume(sleep(40))
+                v7.value
+                _v8 += 1
+              },
+              { abortOldRunOnUpdate: 0, runOnUpdate: 1 },
+            )
 
-              await x.resume(sleep(40))
-              _v7 += 1
-            },
-            {
-              abortOldRunOnUpdate: 0,
-              runOnUpdate: 1,
-              flags: EffectFlags.REENTRANT | EffectFlags.PersistentChildEffect,
-            },
-          )
-        }
+            await x.resume(sleep(40))
+            _v7 += 1
+          },
+          {
+            abortOldRunOnUpdate: 0,
+            runOnUpdate: 1,
+            flags: EffectFlags.REENTRANT | EffectFlags.PersistentChildEffect,
+          },
+        )
+      }
 
-        await x.resume(sleep(25))
-        v9.v
-      },
-      /* { flags: EffectFlags.ManualHandling }, */
-    )
+      await x.resume(sleep(25))
+      v9.v
+    })
 
     await e.awaitCompletion()
     expect(e1 && en1 && e2).toBeTruthy()

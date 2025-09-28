@@ -100,7 +100,6 @@ export {
    * @internal
    */
   WatcherEffect,
-  WatcherEffectAsync,
   watchEffectAsyncLight,
   watchEffectAsyncLightest,
   watchEffectLight,
