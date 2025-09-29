@@ -1566,10 +1566,10 @@ describe('watchEffectAsyncLight', () => {
 
     sequence = []
     expect(
-      e.flags & (ReactiveFlags2.Dirty + en1!.flags) & ReactiveFlags2.Dirty,
+      (e.flags & ReactiveFlags2.Dirty) + (en1!.flags & ReactiveFlags2.Dirty),
     ).toBe(0)
     let _v9 = v9 as any
-    if (_v9.subs.effectId !== 'en1') {
+    if (_v9.subs.sub.effectId !== 'en1') {
       let s1 = _v9.subs
       let s2 = s1.nextSub
       s1.prevSub = s2

@@ -1014,6 +1014,10 @@ export class ReactiveEffectAsync
         run.resolver!(result)
       }
 
+      if (run.collectingChildren || this.children) {
+        updateChildEffects(aborted, this, run.collectingChildren)
+      }
+
       let cleanupError1: any
       if (flags & EffectFlags.EnabledManualBranching) {
         for (const [branchInfo, numVisits] of run.visitedBranches!) {
@@ -1057,10 +1061,6 @@ export class ReactiveEffectAsync
 
       if (cleanupError1) {
         throw cleanupError1
-      }
-
-      if (run.collectingChildren || this.children) {
-        updateChildEffects(aborted, this, run.collectingChildren)
       }
 
       if (toRecurse) {

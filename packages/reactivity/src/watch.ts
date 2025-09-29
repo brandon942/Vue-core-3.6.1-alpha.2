@@ -453,8 +453,9 @@ export function watchEffectAsyncLightest(
       runOnUpdate = true,
     } = options
     if (call) {
+      let effectFunction_ = effectFunction
       effectFunction = x =>
-        call!(effectFunction as Function, WatchErrorCodes.WATCH_CALLBACK, [x])
+        call!(effectFunction_ as Function, WatchErrorCodes.WATCH_CALLBACK, [x])
     }
   } else {
     var flags = 0
