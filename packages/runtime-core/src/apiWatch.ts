@@ -425,7 +425,7 @@ export function watchEffectAsync(
   const effect = watchEffectAsyncLight(
     undefined,
     effectFunction,
-    options,
+    baseWatchOptions,
     // @ts-ignore
     RenderEffectAsync,
     instance,
