@@ -423,7 +423,7 @@ export function watchEffectAsync(
     callWithAsyncErrorHandling(fn, instance, type, args)
 
   const effect = watchEffectAsyncLight(
-    undefined,
+    effectId,
     effectFunction,
     baseWatchOptions,
     // @ts-ignore
